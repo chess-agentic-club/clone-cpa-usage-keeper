@@ -94,6 +94,7 @@ const (
 	migrationRepairUsageEventQuotaWindowIndex = "20260902_repair_usage_event_quota_window_index"
 	// migrationAddUsageEventAPIGroupKeyTimestampIndex 用 (api_group_key, timestamp) 复合索引替代单列 Key 索引。
 	migrationAddUsageEventAPIGroupKeyTimestampIndex = "20260905_usage_event_api_group_key_timestamp_index"
+	migrationCreateExternalUsageReceipts            = "20260906_create_external_usage_receipts"
 )
 
 type schemaMigration struct {
@@ -239,6 +240,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationRepairUsageEventQuotaWindowIndex, run: repairUsageEventQuotaWindowIndexMigration},
 		// 将单列 Key 索引收敛为 Key+时间复合索引，支持请求记录和历史边界查询。
 		{version: migrationAddUsageEventAPIGroupKeyTimestampIndex, run: addUsageEventAPIGroupKeyTimestampIndexMigration},
+		{version: migrationCreateExternalUsageReceipts, run: createExternalUsageReceiptsMigration},
 	}
 }
 

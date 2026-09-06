@@ -11,6 +11,7 @@ type UsageEvent struct {
 	Endpoint            string    `gorm:"column:endpoint"`
 	AuthType            string    `gorm:"column:auth_type;index:idx_usage_events_auth_type_auth_index_id,priority:1"`
 	RequestID           string    `gorm:"column:request_id"`
+	SourceSystem        string    `gorm:"column:source_system;index:idx_usage_events_source_system_request_id,priority:1"`
 	ClientIP            *string   `gorm:"column:client_ip"`
 	XForwardedFor       *string   `gorm:"column:x_forwarded_for"`
 	UserAgent           *string   `gorm:"column:user_agent"`
@@ -35,5 +36,7 @@ type UsageEvent struct {
 	CacheReadPresent    bool  `gorm:"-" json:"-"` // 仅在 Redis 入库归一化期间区分 CPA canonical zero 与旧 payload。
 	CacheCreationTokens int64 `gorm:"not null;default:0"`
 	TotalTokens         int64
+	CostUSD             *float64  `gorm:"column:cost_usd"`
+	CostSource          string    `gorm:"column:cost_source;not null;default:''"`
 	CreatedAt           time.Time `gorm:"serializer:storageTime"`
 }
