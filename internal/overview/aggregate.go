@@ -122,6 +122,10 @@ func addEventToHourlyRow(row *entities.UsageOverviewHourlyStat, event entities.U
 	row.CacheReadTokens += event.CacheReadTokens
 	row.CacheCreationTokens += event.CacheCreationTokens
 	row.TotalTokens += event.TotalTokens
+	if event.CostUSD != nil && event.CostSource == "provider_reported" {
+		row.ProviderCostUSD += *event.CostUSD
+		row.ProviderCostCount++
+	}
 }
 
 func addEventToDailyRow(row *entities.UsageOverviewDailyStat, event entities.UsageEvent) {
@@ -138,6 +142,10 @@ func addEventToDailyRow(row *entities.UsageOverviewDailyStat, event entities.Usa
 	row.CacheReadTokens += event.CacheReadTokens
 	row.CacheCreationTokens += event.CacheCreationTokens
 	row.TotalTokens += event.TotalTokens
+	if event.CostUSD != nil && event.CostSource == "provider_reported" {
+		row.ProviderCostUSD += *event.CostUSD
+		row.ProviderCostCount++
+	}
 }
 
 func hourlyRowLess(left, right entities.UsageOverviewHourlyStat) bool {

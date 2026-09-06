@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository/dto"
 	"cpa-usage-keeper/internal/timeutil"
@@ -32,6 +33,8 @@ type analysisOverviewStatProjection struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	ProviderCostUSD     float64
+	ProviderCostCount   int64
 }
 
 var analysisOverviewProjectionFixedColumns = [...]string{
@@ -47,6 +50,8 @@ var analysisOverviewProjectionFixedColumns = [...]string{
 	"cache_read_tokens",
 	"cache_creation_tokens",
 	"total_tokens",
+	"provider_cost_usd",
+	"provider_cost_count",
 }
 
 func analysisOverviewProjectionColumns(activeFields pricing.ActiveFields) string {
@@ -103,6 +108,9 @@ func loadAnalysisOverviewStatProjection(query *gorm.DB, filter dto.UsageQueryFil
 }
 
 func calculateAnalysisOverviewProjectionCost(costResolver pricing.Resolver, row analysisOverviewStatProjection) pricing.CostResult {
+	if row.ProviderCostCount == row.RequestCount && row.RequestCount > 0 {
+		return pricing.CostResult{Available: true, Cost: helper.UsageTokenCostBreakdown{TotalCostUSD: row.ProviderCostUSD}, PricingStyle: "provider_reported"}
+	}
 	return costResolver.Calculate(newUsagePricingCostSubject(
 		row.APIGroupKey,
 		row.Model,

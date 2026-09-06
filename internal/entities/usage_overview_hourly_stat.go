@@ -25,6 +25,8 @@ type UsageOverviewHourlyStat struct {
 	CacheReadTokens     int64     `gorm:"not null;default:0"`
 	CacheCreationTokens int64     `gorm:"not null;default:0"`
 	TotalTokens         int64     `gorm:"not null;default:0"`
+	ProviderCostUSD     float64   `gorm:"not null;default:0"`
+	ProviderCostCount   int64     `gorm:"not null;default:0"`
 	CreatedAt           time.Time `gorm:"serializer:storageTime;not null"`
 	UpdatedAt           time.Time `gorm:"serializer:storageTime;not null"`
 }

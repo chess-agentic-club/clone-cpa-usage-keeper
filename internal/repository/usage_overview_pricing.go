@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository/dto"
 	"cpa-usage-keeper/internal/timeutil"
@@ -36,6 +37,8 @@ type usageOverviewStatProjection struct {
 	CostOutputTokens        int64
 	CostCacheReadTokens     int64
 	CostCacheCreationTokens int64
+	ProviderCostUSD         float64
+	ProviderCostCount       int64
 }
 
 // 标准 SQL CASE 先逐行完成计费 Token 的非负与普通输入归一化，再按启用规则所需维度合并。
@@ -48,6 +51,8 @@ const usageOverviewStatProjectionAggregateColumns = `
 	SUM(cache_read_tokens) AS cache_read_tokens,
 	SUM(cache_creation_tokens) AS cache_creation_tokens,
 	SUM(total_tokens) AS total_tokens,
+	SUM(provider_cost_usd) AS provider_cost_usd,
+	SUM(provider_cost_count) AS provider_cost_count,
 	SUM(CASE
 		WHEN (CASE WHEN input_tokens > 0 THEN input_tokens ELSE 0 END) -
 			(CASE WHEN cache_read_tokens > 0 THEN cache_read_tokens ELSE 0 END) -
@@ -101,6 +106,9 @@ func applyUsageOverviewStatToOverview(overview *dto.UsageOverviewRecord, row usa
 }
 
 func calculateUsageOverviewProjectionCost(costResolver pricing.Resolver, row usageOverviewStatProjection) pricing.CostResult {
+	if row.ProviderCostCount == row.RequestCount && row.RequestCount > 0 {
+		return pricing.CostResult{Available: true, Cost: helper.UsageTokenCostBreakdown{TotalCostUSD: row.ProviderCostUSD}, PricingStyle: "provider_reported"}
+	}
 	return costResolver.Calculate(newUsagePricingCostSubject(
 		row.APIGroupKey,
 		row.Model,
