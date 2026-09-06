@@ -35,6 +35,14 @@ var (
 )
 
 type Config struct {
+	// UsageSource selects the ingestion runtime: cliproxy or litellm.
+	UsageSource string
+	// LiteLLMBaseURL and LiteLLMMasterKey are used only when UsageSource is litellm.
+	LiteLLMBaseURL      string
+	LiteLLMMasterKey    string
+	LiteLLMSyncInterval time.Duration
+	LiteLLMPageSize     int
+	LiteLLMOverlap      time.Duration
 	// AppHost 是 Web 服务监听主机；空值保持监听所有可用网络接口的现有行为。
 	AppHost string
 	// AppPort 是 Web 服务监听端口。
@@ -173,6 +181,31 @@ func Load(options LoadOptions) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	liteLLMSyncInterval, err := getDuration("LITELLM_SYNC_INTERVAL", 10*time.Second)
+	if err != nil || liteLLMSyncInterval <= 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("LITELLM_SYNC_INTERVAL must be positive")
+	}
+	liteLLMPageSize, err := getInt("LITELLM_PAGE_SIZE", 1000)
+	if err != nil || liteLLMPageSize <= 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("LITELLM_PAGE_SIZE must be positive")
+	}
+	liteLLMOverlap, err := getDuration("LITELLM_OVERLAP", 5*time.Minute)
+	if err != nil || liteLLMOverlap <= 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("LITELLM_OVERLAP must be positive")
+	}
+	usageSource := getString("USAGE_SOURCE", "cliproxy")
+	if usageSource != "cliproxy" && usageSource != "litellm" {
+		return nil, fmt.Errorf("USAGE_SOURCE must be cliproxy or litellm")
+	}
 
 	backupEnabled, err := getBool("BACKUP_ENABLED", true)
 	if err != nil {
@@ -254,6 +287,12 @@ func Load(options LoadOptions) (*Config, error) {
 	workDir := getString("WORK_DIR", DefaultWorkDir)
 
 	cfg := &Config{
+		UsageSource:                     usageSource,
+		LiteLLMBaseURL:                  strings.TrimRight(strings.TrimSpace(os.Getenv("LITELLM_BASE_URL")), "/"),
+		LiteLLMMasterKey:                strings.TrimSpace(os.Getenv("LITELLM_MASTER_KEY")),
+		LiteLLMSyncInterval:             liteLLMSyncInterval,
+		LiteLLMPageSize:                 liteLLMPageSize,
+		LiteLLMOverlap:                  liteLLMOverlap,
 		AppHost:                         strings.TrimSpace(os.Getenv("APP_HOST")),
 		AppPort:                         getString("APP_PORT", "8080"),
 		AppBasePath:                     appBasePath,
@@ -292,11 +331,17 @@ func Load(options LoadOptions) (*Config, error) {
 	if appHost := strings.TrimSpace(options.AppHost); appHost != "" {
 		cfg.AppHost = appHost
 	}
-	if cfg.CPABaseURL == "" {
+	if cfg.UsageSource == "cliproxy" && cfg.CPABaseURL == "" {
 		return nil, fmt.Errorf("CPA_BASE_URL is required")
 	}
-	if cfg.CPAManagementKey == "" {
+	if cfg.UsageSource == "cliproxy" && cfg.CPAManagementKey == "" {
 		return nil, fmt.Errorf("CPA_MANAGEMENT_KEY is required")
+	}
+	if cfg.UsageSource == "litellm" && cfg.LiteLLMBaseURL == "" {
+		return nil, fmt.Errorf("LITELLM_BASE_URL is required when USAGE_SOURCE is litellm")
+	}
+	if cfg.UsageSource == "litellm" && cfg.LiteLLMMasterKey == "" {
+		return nil, fmt.Errorf("LITELLM_MASTER_KEY is required when USAGE_SOURCE is litellm")
 	}
 	if cfg.AuthEnabled {
 		if cfg.LoginPassword == "" && authEnabledValue == "" {

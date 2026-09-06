@@ -19,6 +19,7 @@ var configEnvKeys = []string{
 	"REQUEST_TIMEOUT", "LOG_LEVEL", "LOG_FILE_ENABLED", "LOG_DIR", "LOG_RETENTION_DAYS",
 	"AUTH_ENABLED", "LOGIN_PASSWORD", "AUTH_SESSION_TTL", "TRUSTED_PROXY_CIDRS", "TZ", "TLS_SKIP_VERIFY", "QUOTA_REFRESH_WORKER_LIMIT", "QUOTA_UPSTREAM_RESPONSES_ENABLED",
 	"API_KEY_VIEWER_LOCAL_RANKING_ENABLED",
+	"USAGE_SOURCE", "LITELLM_BASE_URL", "LITELLM_MASTER_KEY", "LITELLM_SYNC_INTERVAL", "LITELLM_PAGE_SIZE", "LITELLM_OVERLAP",
 }
 
 func TestMain(m *testing.M) {
@@ -167,6 +168,31 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	}
 	if cfg.LogRetentionDays != 7 {
 		t.Fatalf("expected default log retention 7 days, got %d", cfg.LogRetentionDays)
+	}
+}
+
+func TestLoadFromEnvRejectsUnknownUsageSource(t *testing.T) {
+	t.Setenv("CPA_BASE_URL", "http://127.0.0.1:"+cpa.ManagementRedisDefaultPort)
+	t.Setenv("CPA_MANAGEMENT_KEY", "secret")
+	t.Setenv("USAGE_SOURCE", "other")
+
+	_, err := LoadFromEnv()
+	if err == nil || err.Error() != "USAGE_SOURCE must be cliproxy or litellm" {
+		t.Fatalf("expected usage source validation error, got %v", err)
+	}
+}
+
+func TestLoadFromEnvAcceptsLiteLLMSettingsWithoutCPASettings(t *testing.T) {
+	t.Setenv("USAGE_SOURCE", "litellm")
+	t.Setenv("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+	t.Setenv("LITELLM_MASTER_KEY", "master-key")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv returned error: %v", err)
+	}
+	if cfg.UsageSource != "litellm" || cfg.LiteLLMBaseURL != "http://127.0.0.1:4000" || cfg.LiteLLMMasterKey != "master-key" {
+		t.Fatalf("unexpected LiteLLM config: %+v", cfg)
 	}
 }
 
