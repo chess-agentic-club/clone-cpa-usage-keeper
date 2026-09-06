@@ -16,7 +16,7 @@ import (
 )
 
 // usageEventProjectionColumns 限制 usage_events 查询列，避免 Overview 和列表页把 RawJSON 等大字段读入内存。
-const usageEventProjectionColumns = "id, api_group_key, provider, auth_type, request_id, client_ip, x_forwarded_for, user_agent, model, model_alias, reasoning_effort, service_tier, response_service_tier, executor_type, endpoint, timestamp, source, auth_index, failed, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens"
+const usageEventProjectionColumns = "id, api_group_key, provider, auth_type, request_id, client_ip, x_forwarded_for, user_agent, model, model_alias, reasoning_effort, service_tier, response_service_tier, executor_type, endpoint, timestamp, source, auth_index, failed, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, cost_usd, cost_source"
 
 // usageOverviewBoundaryEventProjectionColumns 只包含非 Custom Overview 边界卡片计算需要的字段。
 const usageOverviewBoundaryEventProjectionColumns = "api_group_key, model, model_alias, timestamp, failed, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens"
@@ -54,6 +54,8 @@ type usageEventProjection struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	CostUSD             *float64 `gorm:"column:cost_usd"`
+	CostSource          string   `gorm:"column:cost_source"`
 }
 
 // Request Event Log Tab：先按列表条件统计总数，再加载当前页。
@@ -208,7 +210,7 @@ func loadUsageEventRecordsForQuery(db *gorm.DB, query *gorm.DB, costResolver pri
 	for _, event := range events {
 		record := usageEventProjectionToRecord(event)
 		// Request Events cost 只在响应阶段按当前价格配置计算，不回写 usage_events。
-		record.CostUSD, record.CostAvailable, record.PricingStyle = usageEventRecordCost(record, costResolver)
+		record.CostUSD, record.CostAvailable, record.PricingStyle = usageEventRecordCostWithProviderCost(record, event.CostUSD, event.CostSource, costResolver)
 		rows = append(rows, record)
 	}
 	return rows, nil
@@ -231,7 +233,7 @@ func streamUsageEventRecordsForQuery(db *gorm.DB, query *gorm.DB, emit func(dto.
 		}
 		record := usageEventProjectionToRecord(event)
 		// Request Events cost 只在响应阶段按当前价格配置计算，不回写 usage_events。
-		record.CostUSD, record.CostAvailable, record.PricingStyle = usageEventRecordCost(record, costResolver)
+		record.CostUSD, record.CostAvailable, record.PricingStyle = usageEventRecordCostWithProviderCost(record, event.CostUSD, event.CostSource, costResolver)
 		if err := emit(record); err != nil {
 			return err
 		}
@@ -286,6 +288,13 @@ func usageEventRecordCost(record dto.UsageEventRecord, costResolver pricing.Reso
 	return result.Cost.TotalCostUSD, result.Available, result.PricingStyle
 }
 
+func usageEventRecordCostWithProviderCost(record dto.UsageEventRecord, providerCost *float64, source string, costResolver pricing.Resolver) (float64, bool, string) {
+	if providerCost != nil && strings.EqualFold(strings.TrimSpace(source), "provider_reported") {
+		return *providerCost, true, "provider_reported"
+	}
+	return usageEventRecordCost(record, costResolver)
+}
+
 // usageEventProjectionToEntity 把轻量投影转回实体，供内存聚合复用原有事件处理逻辑。
 func usageEventProjectionToEntity(event usageEventProjection) entities.UsageEvent {
 	// 这里不 trim 原始维度，后续聚合入口会按各自语义统一 normalize。
@@ -314,6 +323,8 @@ func usageEventProjectionToEntity(event usageEventProjection) entities.UsageEven
 		CacheReadTokens:     event.CacheReadTokens,
 		CacheCreationTokens: event.CacheCreationTokens,
 		TotalTokens:         event.TotalTokens,
+		CostUSD:             event.CostUSD,
+		CostSource:          event.CostSource,
 	}
 }
 

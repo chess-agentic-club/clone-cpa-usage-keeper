@@ -800,13 +800,19 @@ export async function fetchAnalysisLatency(request: UsageRangeRequest, signal?: 
   return response.json()
 }
 
-export async function fetchCpaApiKeyOptions(signal?: AbortSignal): Promise<CpaApiKeyOptionsResponse> {
+// This endpoint is source-neutral: CLIProxy keys and LiteLLM virtual-key
+// identities use the same dashboard filter contract.
+export async function fetchUsageAPIKeyOptions(signal?: AbortSignal): Promise<CpaApiKeyOptionsResponse> {
   const response = await apiFetch(apiPath('/usage/api-keys/options'), { signal, cache: 'no-store' })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load CPA API key options: ${response.status}`)
+    await parseApiError(response, `Failed to load usage API key options: ${response.status}`)
   }
   return response.json()
 }
+
+// Backward-compatible alias for integrations compiled against the original
+// CPA-specific helper. The route itself is now source-neutral.
+export const fetchCpaApiKeyOptions = fetchUsageAPIKeyOptions
 
 export async function fetchCpaApiKeys(signal?: AbortSignal): Promise<CpaApiKeysResponse> {
   const response = await apiFetch(apiPath('/usage/api-keys'), { signal, cache: 'no-store' })

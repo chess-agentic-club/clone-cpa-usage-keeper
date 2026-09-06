@@ -10,3 +10,18 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
+
+# LiteLLM-only variant (use as a separate Compose project and data directory):
+# cpa-usage-keeper:
+#   image: ghcr.io/willxup/cpa-usage-keeper:latest
+#   restart: unless-stopped
+#   ports:
+#     - "8080:8080"
+#   environment:
+#     - USAGE_SOURCE=litellm
+#     - LITELLM_BASE_URL=http://litellm:4000
+#     - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
+#   env_file:
+#     - .env
+#   volumes:
+#     - ./litellm-data:/data

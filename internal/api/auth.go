@@ -118,10 +118,12 @@ func (h *authHandler) setCPAAPIKeyProvider(provider service.CPAAPIKeyProvider) {
 	}
 }
 
-func (h *authHandler) registerRoutes(router gin.IRoutes) {
+func (h *authHandler) registerRoutes(router gin.IRoutes, apiKeyLoginEnabled bool) {
 	router.GET("/session", h.getSession)
 	router.POST("/login", h.login)
-	router.POST("/api-key-login", h.apiKeyLogin)
+	if apiKeyLoginEnabled {
+		router.POST("/api-key-login", h.apiKeyLogin)
+	}
 	router.POST("/logout", h.logout)
 }
 

@@ -260,6 +260,35 @@ Run `docker compose up -d` to start Keeper and `docker compose down` to stop it.
 
 Keeper data is stored under `./data` by the provided template.
 
+#### LiteLLM-only deployment
+
+Keeper can poll LiteLLM spend logs directly without a CPA container. Set
+`USAGE_SOURCE=litellm`, `LITELLM_BASE_URL`, and `LITELLM_MASTER_KEY` in the
+environment (keep the key in secret storage). Do not configure CPA or Redis
+for this mode. Mount a dedicated data directory/volume for the LiteLLM
+deployment; never reuse a database that contains CLIProxy usage.
+
+```yaml
+services:
+  cpa-usage-keeper-litellm:
+    image: ghcr.io/willxup/cpa-usage-keeper:latest
+    ports: ["8080:8080"]
+    environment:
+      USAGE_SOURCE: litellm
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
+      AUTH_ENABLED: "true"
+      LOGIN_PASSWORD: ${KEEPER_LOGIN_PASSWORD:?set KEEPER_LOGIN_PASSWORD}
+      WORK_DIR: /data
+    volumes:
+      - ./litellm-keeper-data:/data
+```
+
+The dashboard keeps Overview, Analysis, Request Events, costs, and generic
+API-key filters. CPA Auth Files, quota, and CPA API-key management are not
+available in LiteLLM mode. Switching sources requires a separate deployment
+and database (`USAGE_SOURCE=cliproxy` or `litellm`).
+
 ### Docker (CPA Already Runs On The Host)
 
 Use the same `.env` values as the Keeper-only Compose setup when you prefer `docker run`:

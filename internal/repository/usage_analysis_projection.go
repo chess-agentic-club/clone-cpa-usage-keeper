@@ -68,15 +68,23 @@ func analysisOverviewProjectionColumns(activeFields pricing.ActiveFields) string
 }
 
 func loadAnalysisOverviewHourlyStatsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, activeFields pricing.ActiveFields) ([]analysisOverviewStatProjection, error) {
-	query := db.Model(&entities.UsageOverviewHourlyStat{}).
-		Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_hourly_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	query := queryActiveUsageAPIKeyStats(db.Model(&entities.UsageOverviewHourlyStat{}), "usage_overview_hourly_stats")
 	return loadAnalysisOverviewStatProjection(query, filter, start, end, "hourly", activeFields)
 }
 
 func loadAnalysisOverviewDailyStatsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, activeFields pricing.ActiveFields) ([]analysisOverviewStatProjection, error) {
-	query := db.Model(&entities.UsageOverviewDailyStat{}).
-		Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_daily_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	query := queryActiveUsageAPIKeyStats(db.Model(&entities.UsageOverviewDailyStat{}), "usage_overview_daily_stats")
 	return loadAnalysisOverviewStatProjection(query, filter, start, end, "daily", activeFields)
+}
+
+func queryActiveUsageAPIKeyStats(query *gorm.DB, table string) *gorm.DB {
+	// Correlated EXISTS preserves the narrow rollup projection while accepting
+	// either an active CPA key or a source-owned non-secret analytics identity.
+	return query.Where(
+		"EXISTS (SELECT 1 FROM cpa_api_keys WHERE cpa_api_keys.api_key = "+table+".api_group_key AND cpa_api_keys.is_deleted = ?) OR EXISTS (SELECT 1 FROM usage_api_key_identities WHERE usage_api_key_identities.api_group_key = "+table+".api_group_key AND usage_api_key_identities.is_deleted = ?)",
+		false,
+		false,
+	)
 }
 
 func loadAnalysisOverviewStatProjection(query *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, grain string, activeFields pricing.ActiveFields) ([]analysisOverviewStatProjection, error) {

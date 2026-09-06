@@ -73,14 +73,6 @@ func registerCPAAPIKeyRoutes(router gin.IRoutes, provider service.CPAAPIKeyProvi
 		c.JSON(http.StatusOK, cpaAPIKeySettingsListResponse{Items: rows})
 	})
 
-	router.GET("/usage/api-keys/options", func(c *gin.Context) {
-		rows, err := listCPAAPIKeyOptionRows(c, provider)
-		if err != nil {
-			return
-		}
-		c.JSON(http.StatusOK, cpaAPIKeyOptionsResponse{Options: rows})
-	})
-
 	router.PATCH("/usage/api-keys/:id", func(c *gin.Context) {
 		if provider == nil {
 			c.JSON(http.StatusNotImplemented, gin.H{"error": "api key provider is not configured"})
@@ -115,6 +107,29 @@ func registerCPAAPIKeyRoutes(router gin.IRoutes, provider service.CPAAPIKeyProvi
 			return
 		}
 		c.JSON(http.StatusOK, toCPAAPIKeyResponse(row))
+	})
+}
+
+// registerUsageAPIKeyOptionRoute is source-neutral: CPA keys and external
+// analytics identities share the filter endpoint without making a LiteLLM hash
+// an authentication credential.
+func registerUsageAPIKeyOptionRoute(router gin.IRoutes, cpaProvider service.CPAAPIKeyProvider, identityProvider service.UsageAPIKeyIdentityProvider) {
+	router.GET("/usage/api-keys/options", func(c *gin.Context) {
+		options, err := listCPAAPIKeyOptionRows(c, cpaProvider)
+		if err != nil {
+			return
+		}
+		if identityProvider != nil {
+			identities, err := identityProvider.ListUsageAPIKeyIdentities(c.Request.Context())
+			if err != nil {
+				writeInternalError(c, "list usage api key identities failed", err)
+				return
+			}
+			for _, identity := range identities {
+				options = append(options, cpaAPIKeyOption{ID: service.UsageAPIKeyIdentityFilterID(identity.ID), Label: identity.APIGroupKey})
+			}
+		}
+		c.JSON(http.StatusOK, cpaAPIKeyOptionsResponse{Options: options})
 	})
 }
 

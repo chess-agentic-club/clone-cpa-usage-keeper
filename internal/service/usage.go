@@ -56,6 +56,16 @@ func (s *usageService) resolveAPIGroupKey(ctx context.Context, apiKeyID string) 
 	if apiKeyID == "" {
 		return "", nil
 	}
+	if externalID, ok, err := parseExternalUsageAPIKeyFilterID(apiKeyID); ok {
+		if err != nil {
+			return "", err
+		}
+		identity, err := repository.FindActiveUsageAPIKeyIdentityByID(ctx, s.db.WithContext(ctx), externalID)
+		if err != nil {
+			return "", err
+		}
+		return identity.APIGroupKey, nil
+	}
 	parsedID, err := strconv.ParseInt(apiKeyID, 10, 64)
 	if err != nil || parsedID <= 0 {
 		return "", ErrInvalidID

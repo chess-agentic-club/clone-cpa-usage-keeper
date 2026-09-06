@@ -200,7 +200,7 @@ func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsagePro
 	})
 }
 
-func registerUsageOverviewRoute(router gin.IRoutes, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider) {
+func registerUsageOverviewRoute(router gin.IRoutes, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider, identityProvider ...service.UsageAPIKeyIdentityProvider) {
 	router.GET("/usage/overview", func(c *gin.Context) {
 		if usageProvider == nil {
 			writeUsageOverviewResponse(c, usageProvider, servicedto.UsageFilter{})
@@ -219,7 +219,7 @@ func registerUsageOverviewRoute(router gin.IRoutes, usageProvider service.UsageP
 			writeUsageFilterParseError(c, err)
 			return
 		}
-		writeUsageOverviewRealtimeResponse(c, usageProvider, cpaAPIKeyProvider, filter)
+		writeUsageOverviewRealtimeResponse(c, usageProvider, cpaAPIKeyProvider, firstUsageAPIKeyIdentityProvider(identityProvider), filter)
 	})
 }
 
@@ -252,7 +252,7 @@ func writeUsageOverviewResponse(c *gin.Context, usageProvider service.UsageProvi
 	})
 }
 
-func writeUsageOverviewRealtimeResponse(c *gin.Context, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider, filter servicedto.UsageFilter) {
+func writeUsageOverviewRealtimeResponse(c *gin.Context, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider, identityProvider service.UsageAPIKeyIdentityProvider, filter servicedto.UsageFilter) {
 	if usageProvider == nil {
 		c.JSON(http.StatusOK, emptyUsageOverviewRealtime(filter.RealtimeWindow))
 		return
@@ -262,7 +262,7 @@ func writeUsageOverviewRealtimeResponse(c *gin.Context, usageProvider service.Us
 		writeUsageProviderError(c, "get usage overview realtime failed", err)
 		return
 	}
-	apiKeyInfos, err := loadCPAAPIKeyInfos(c, cpaAPIKeyProvider)
+	apiKeyInfos, err := loadAPIKeyInfos(c, cpaAPIKeyProvider, identityProvider)
 	if err != nil {
 		return
 	}

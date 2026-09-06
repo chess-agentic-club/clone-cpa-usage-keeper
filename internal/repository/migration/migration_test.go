@@ -89,6 +89,7 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260902_repair_usage_event_quota_window_index",
 		"20260905_usage_event_api_group_key_timestamp_index",
 		"20260906_create_external_usage_receipts",
+		"20260906_create_usage_api_key_identities",
 	}
 	assertStringSlicesEqual(t, want, got)
 }

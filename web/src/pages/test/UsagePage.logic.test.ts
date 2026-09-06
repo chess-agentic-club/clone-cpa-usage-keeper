@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageCustomRangeForTab, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeStoredApiKeyFilter, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, resolveApiKeyFilterRequestState, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldResetSelectedApiKeyFilter, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration, API_KEY_FILTER_MAX_LENGTH } from '../UsagePage';
+import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getSettingsSectionVisibility, getUsageCustomRangeForTab, getUsageSourceCapabilities, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeStoredApiKeyFilter, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, resolveApiKeyFilterRequestState, resolveAvailableUsageTab, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldResetSelectedApiKeyFilter, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration, API_KEY_FILTER_MAX_LENGTH } from '../UsagePage';
 import { REQUEST_EVENT_COLUMN_IDS } from '@/components/usage/RequestEventsDetailsCard';
 import { ApiError } from '@/lib/api';
 import type { UsageFilterWindow, VersionResponse } from '@/lib/types';
@@ -827,6 +827,28 @@ describe('UsagePage tab labels', () => {
 
     expect(values).toEqual(['overview', 'analysis', 'events', 'auth-files', 'ai-provider', 'settings']);
   });
+
+  it('hides CPA-only navigation for LiteLLM while retaining the shared dashboard tabs', () => {
+    const capabilities = getUsageSourceCapabilities({
+      usage_source: 'litellm',
+      capabilities: {
+        api_key_analytics: true,
+        cpa_auth_files: false,
+        cpa_quota: false,
+      },
+    });
+    const values = getUsageTabOptions((key) => key, {
+      includeRanking: false,
+      capabilities,
+    }).map((option) => option.value);
+
+    expect(values).toEqual(['overview', 'analysis', 'events', 'settings']);
+    expect(shouldShowApiKeyFilter('analysis')).toBe(true);
+    expect(getCredentialSectionVisibility('auth-files', capabilities).enabled).toBe(false);
+    expect(getCredentialSectionVisibility('ai-provider', capabilities).enabled).toBe(false);
+    expect(getSettingsSectionVisibility(capabilities).showCPAAPIKeySettings).toBe(false);
+    expect(resolveAvailableUsageTab('auth-files', capabilities)).toBe('overview');
+  });
 });
 
 describe('UsagePage credentials tab migration', () => {
@@ -919,6 +941,12 @@ describe('persisted API key filter', () => {
     expect(normalizeStoredApiKeyFilter('9223372036854775807')).toBe('9223372036854775807');
     expect(normalizeStoredApiKeyFilter('9223372036854775808')).toBe('');
     expect(normalizeStoredApiKeyFilter('1'.repeat(API_KEY_FILTER_MAX_LENGTH + 1))).toBe('');
+  });
+
+  it('preserves a LiteLLM external API-key identity selected from the generic options endpoint', () => {
+    expect(normalizeStoredApiKeyFilter('external:42')).toBe('external:42');
+    expect(normalizeStoredApiKeyFilter('external:0')).toBe('');
+    expect(normalizeStoredApiKeyFilter('external:not-a-number')).toBe('');
   });
 
   it('keeps a restored selection until the options actually load', () => {

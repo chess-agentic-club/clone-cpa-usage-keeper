@@ -28,6 +28,24 @@ type LiteLLMSpendLogPage struct {
 	Data       []LiteLLMSpendLog `json:"data"`
 	TotalPages int               `json:"total_pages"`
 }
+
+// LiteLLMHTTPError retains the upstream status so the ingestion runner can
+// distinguish retryable transient responses from permanent request failures.
+type LiteLLMHTTPError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e *LiteLLMHTTPError) Error() string {
+	if e == nil {
+		return "LiteLLM HTTP error"
+	}
+	if e.Status != "" {
+		return fmt.Sprintf("litellm spend logs: %s", e.Status)
+	}
+	return fmt.Sprintf("litellm spend logs: HTTP %d", e.StatusCode)
+}
+
 type LiteLLMClient struct {
 	baseURL, key string
 	client       *http.Client
@@ -55,7 +73,7 @@ func (c *LiteLLMClient) ListSpendLogs(ctx context.Context, start, end time.Time,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return LiteLLMSpendLogPage{}, fmt.Errorf("litellm spend logs: %s", resp.Status)
+		return LiteLLMSpendLogPage{}, &LiteLLMHTTPError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var out LiteLLMSpendLogPage
 	err = json.NewDecoder(resp.Body).Decode(&out)

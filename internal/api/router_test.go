@@ -392,6 +392,72 @@ func TestStatusOmitsCPAPublicURLWhenUnset(t *testing.T) {
 	}
 }
 
+func TestLiteLLMCapabilitiesHideCPAOnlyRoutes(t *testing.T) {
+	capabilities := SourceCapabilitiesForUsageSource("litellm")
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{
+		Status: StatusRouteConfig{UsageSource: "litellm", Capabilities: capabilities},
+	})
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	statusResponse := httptest.NewRecorder()
+	router.ServeHTTP(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", statusResponse.Code, statusResponse.Body.String())
+	}
+	var status struct {
+		UsageSource  string             `json:"usage_source"`
+		Capabilities SourceCapabilities `json:"capabilities"`
+	}
+	if err := json.NewDecoder(statusResponse.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.UsageSource != "litellm" || status.Capabilities != capabilities {
+		t.Fatalf("unexpected LiteLLM source capabilities: %+v", status)
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/auth/api-key-login"},
+		{http.MethodPatch, "/api/v1/auth-files/status"},
+		{http.MethodGet, "/api/v1/quota/inspection"},
+		{http.MethodGet, "/api/v1/usage/api-keys/settings"},
+		{http.MethodGet, "/api/v1/usage/events/:id/request-log"},
+		{http.MethodGet, "/api/v1/usage/identities/:id/errors"},
+	} {
+		if hasRouterRoute(router, route.method, route.path) {
+			t.Fatalf("expected LiteLLM router to omit %s %s", route.method, route.path)
+		}
+	}
+}
+
+func TestCLIProxyCapabilitiesKeepCPAOnlyRoutes(t *testing.T) {
+	capabilities := SourceCapabilitiesForUsageSource("cliproxy")
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{
+		Status: StatusRouteConfig{UsageSource: "cliproxy", Capabilities: capabilities, CPARequestLogAccessEnabled: true},
+	})
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/auth/api-key-login"},
+		{http.MethodPatch, "/api/v1/auth-files/status"},
+		{http.MethodGet, "/api/v1/quota/inspection"},
+		{http.MethodGet, "/api/v1/usage/api-keys/settings"},
+		{http.MethodGet, "/api/v1/usage/events/:id/request-log"},
+		{http.MethodGet, "/api/v1/usage/identities/:id/errors"},
+	} {
+		if !hasRouterRoute(router, route.method, route.path) {
+			t.Fatalf("expected CLIProxy router to keep %s %s", route.method, route.path)
+		}
+	}
+}
+
+func hasRouterRoute(router *gin.Engine, method, path string) bool {
+	for _, route := range router.Routes() {
+		if route.Method == method && route.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
 func TestVersionHidesUpdateCheckForDevVersion(t *testing.T) {
 	previousVersion := version.Version
 	t.Cleanup(func() { version.Version = previousVersion })

@@ -44,9 +44,18 @@ export interface StatusResponse {
   cpa_public_url?: string
   cpa_request_log_access_enabled?: boolean
   usage_source?: 'cliproxy' | 'litellm'
+  capabilities?: SourceCapabilitiesResponse
   last_error?: string
   last_warning?: string
   last_status?: string
+}
+
+export interface SourceCapabilitiesResponse {
+  api_key_analytics?: boolean
+  cpa_auth_files?: boolean
+  cpa_quota?: boolean
+  litellm_users?: boolean
+  litellm_teams?: boolean
 }
 
 export type QuotaAutoRefreshScheduleUnit = 'minute' | 'hour' | 'day' | 'week'

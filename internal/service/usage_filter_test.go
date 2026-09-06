@@ -263,6 +263,45 @@ func TestUsageServiceResolvesAPIKeyIDForUsageQueries(t *testing.T) {
 	}
 }
 
+func TestUsageServiceResolvesExternalAPIKeyFilterID(t *testing.T) {
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-service-external-api-key-filter.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	bucket := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	inserted, err := repository.InsertExternalUsageEvents(db, "litellm", []entities.UsageEvent{{
+		RequestID:    "litellm-request-1",
+		APIGroupKey:  "litellm:key-hash",
+		Model:        "gpt-4o",
+		Timestamp:    bucket,
+		InputTokens:  10,
+		OutputTokens: 20,
+		TotalTokens:  30,
+	}})
+	if err != nil || len(inserted) != 1 {
+		t.Fatalf("insert external event = %d, %v; want 1, nil", len(inserted), err)
+	}
+	if err := repository.AggregateUsageOverviewStats(context.Background(), db, bucket.Add(time.Hour)); err != nil {
+		t.Fatalf("aggregate external event: %v", err)
+	}
+	start := bucket
+	end := bucket.Add(time.Hour)
+
+	analysis, err := NewUsageService(db, emptyPricingCatalogForTest()).GetAnalysis(context.Background(), servicedto.UsageFilter{
+		APIKeyID:  "external:1",
+		Range:     "custom",
+		StartTime: &start,
+		EndTime:   &end,
+	})
+	if err != nil {
+		t.Fatalf("GetAnalysis returned error: %v", err)
+	}
+	if len(analysis.APIKeyComposition) != 1 || analysis.APIKeyComposition[0].Key != "litellm:key-hash" || analysis.APIKeyComposition[0].TotalTokens != 30 {
+		t.Fatalf("expected external API key filter to resolve virtual key, got %+v", analysis.APIKeyComposition)
+	}
+}
+
 func TestUsageServiceRejectsInvalidAPIKeyID(t *testing.T) {
 	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-service-invalid-api-key-id.db")})
 	if err != nil {

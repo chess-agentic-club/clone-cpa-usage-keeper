@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
-import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
+import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageAPIKeyOptions, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
+import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, SourceCapabilitiesResponse, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
@@ -72,6 +72,67 @@ const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
 const RANKING_PREVIEW_API = resolveRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
 const LOCAL_RANKING_PREVIEW_API = resolveLocalRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
 type Translate = (key: string) => string;
+export type UsageSourceCapabilities = {
+  apiKeyAnalytics: boolean;
+  cpaAuthFiles: boolean;
+  cpaQuota: boolean;
+  cpaAPIKeyMetadata: boolean;
+};
+
+const CLIPROXY_CAPABILITIES: UsageSourceCapabilities = {
+  apiKeyAnalytics: true,
+  cpaAuthFiles: true,
+  cpaQuota: true,
+  cpaAPIKeyMetadata: true,
+};
+
+const LITELLM_CAPABILITIES: UsageSourceCapabilities = {
+  apiKeyAnalytics: true,
+  cpaAuthFiles: false,
+  cpaQuota: false,
+  cpaAPIKeyMetadata: false,
+};
+
+export const getUsageSourceCapabilities = (
+  status: Pick<StatusResponse, 'usage_source' | 'capabilities'> | null,
+): UsageSourceCapabilities => {
+  const fallback = status?.usage_source === 'litellm' ? LITELLM_CAPABILITIES : CLIPROXY_CAPABILITIES;
+  const capabilities: SourceCapabilitiesResponse | undefined = status?.capabilities;
+  if (!capabilities) return fallback;
+
+  const cpaAuthFiles = capabilities.cpa_auth_files ?? fallback.cpaAuthFiles;
+  const cpaQuota = capabilities.cpa_quota ?? fallback.cpaQuota;
+  return {
+    apiKeyAnalytics: capabilities.api_key_analytics ?? fallback.apiKeyAnalytics,
+    cpaAuthFiles,
+    cpaQuota,
+    // CPA key metadata is unavailable for LiteLLM. Older servers do not
+    // advertise it explicitly, so preserve the CLIProxy fallback there.
+    cpaAPIKeyMetadata: status?.usage_source === 'litellm' ? false : (cpaAuthFiles || cpaQuota),
+  };
+};
+
+export const isUsageTabAvailable = (
+  tab: UsageTab,
+  capabilities: UsageSourceCapabilities,
+  { includeRanking = true }: { includeRanking?: boolean } = {},
+): boolean => {
+  if (tab === 'ranking') return includeRanking;
+  if (tab === 'auth-files') return capabilities.cpaAuthFiles;
+  if (tab === 'ai-provider') return capabilities.cpaAuthFiles || capabilities.cpaQuota;
+  return true;
+};
+
+export const resolveAvailableUsageTab = (
+  tab: UsageTab,
+  capabilities: UsageSourceCapabilities,
+  options?: { includeRanking?: boolean },
+): UsageTab => (isUsageTabAvailable(tab, capabilities, options) ? tab : DEFAULT_USAGE_TAB);
+
+export const getSettingsSectionVisibility = (capabilities: UsageSourceCapabilities) => ({
+  showCPAAPIKeySettings: capabilities.cpaAPIKeyMetadata,
+});
+
 const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
   overview: 'usage_stats.tab_overview',
   analysis: 'usage_stats.tab_analysis',
@@ -130,10 +191,14 @@ export const loadAnalysisSections = async <TCore, TLatency>({
   await Promise.all([coreRequest, latencyRequest]);
 };
 
-export const getCredentialSectionVisibility = (tab: UsageTab) => ({
-  enabled: tab === 'auth-files' || tab === 'ai-provider',
-  showAuthFiles: tab === 'auth-files',
-  showAiProvider: tab === 'ai-provider',
+export const getCredentialSectionVisibility = (
+  tab: UsageTab,
+  capabilities: UsageSourceCapabilities = CLIPROXY_CAPABILITIES,
+) => ({
+  enabled: (tab === 'auth-files' && capabilities.cpaAuthFiles)
+    || (tab === 'ai-provider' && (capabilities.cpaAuthFiles || capabilities.cpaQuota)),
+  showAuthFiles: tab === 'auth-files' && capabilities.cpaAuthFiles,
+  showAiProvider: tab === 'ai-provider' && (capabilities.cpaAuthFiles || capabilities.cpaQuota),
 });
 
 export const shouldShowRangeControls = (tab: UsageTab) => tab !== 'ranking' && tab !== 'settings' && !getCredentialSectionVisibility(tab).enabled;
@@ -643,9 +708,12 @@ export { normalizeUsageTabValue } from '@/lib/usageNavigation';
 
 export const getUsageTabOptions = (
   translate: Translate,
-  { includeRanking = true }: { includeRanking?: boolean } = {},
+  { includeRanking = true, capabilities = CLIPROXY_CAPABILITIES }: {
+    includeRanking?: boolean;
+    capabilities?: UsageSourceCapabilities;
+  } = {},
 ): Array<{ value: UsageTab; label: string }> =>
-  USAGE_TAB_OPTIONS.filter((value) => includeRanking || value !== 'ranking').map((value) => ({
+  USAGE_TAB_OPTIONS.filter((value) => isUsageTabAvailable(value, capabilities, { includeRanking })).map((value) => ({
     value,
     label: translate(USAGE_TAB_LABEL_KEYS[value]),
   }));
@@ -683,12 +751,18 @@ const loadRealtimeWindow = (): OverviewRealtimeWindow => {
 
 export const API_KEY_FILTER_MAX_LENGTH = 19;
 const MAX_API_KEY_FILTER_ID = 9223372036854775807n;
+const EXTERNAL_API_KEY_FILTER_PATTERN = /^external:([1-9]\d{0,18})$/;
 
 export const normalizeStoredApiKeyFilter = (value: unknown): string => {
   if (typeof value !== 'string') {
     return '';
   }
   const normalized = value.trim();
+  const externalMatch = EXTERNAL_API_KEY_FILTER_PATTERN.exec(normalized);
+  if (externalMatch) {
+    const id = BigInt(externalMatch[1]);
+    return id <= MAX_API_KEY_FILTER_ID ? `external:${id.toString()}` : '';
+  }
   if (!/^\d{1,19}$/.test(normalized)) {
     return '';
   }
@@ -776,7 +850,9 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null);
   const apiKeyOptionsRequestControllerRef = useRef<AbortController | null>(null);
-  const credentialSectionVisibility = getCredentialSectionVisibility(activeTab);
+  const sourceCapabilities = useMemo(() => getUsageSourceCapabilities(status), [status]);
+  const settingsSectionVisibility = getSettingsSectionVisibility(sourceCapabilities);
+  const credentialSectionVisibility = getCredentialSectionVisibility(activeTab, sourceCapabilities);
   const activeCustomRange = useMemo(() => getUsageCustomRangeForTab(activeTab, customRange, {
     nowMs: Date.now(),
     timeZone: status?.timezone ?? timeRangeState.timeZone,
@@ -980,8 +1056,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     return updated;
   }, [updateLocalRankingProfile]);
   const credentialsData = useCredentialsTabData({
-    enabledAuthFiles: credentialSectionVisibility.showAuthFiles && pageVisible,
-    enabledAiProviders: credentialSectionVisibility.showAiProvider && pageVisible,
+    // Status is loaded before enabling source-specific hooks. This prevents
+    // a LiteLLM deep link from briefly probing CPA management endpoints while
+    // capabilities are still unknown.
+    enabledAuthFiles: status !== null && credentialSectionVisibility.showAuthFiles && pageVisible,
+    enabledAiProviders: status !== null && credentialSectionVisibility.showAiProvider && pageVisible,
     onAuthRequired,
     onNotice: showTopNotice,
   });
@@ -995,8 +1074,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const analysisRequestControllerRef = useRef<AbortController | null>(null);
 
   const tabOptions = useMemo(
-    () => getUsageTabOptions(t, { includeRanking: !isEmbeddedInCPAMC }),
-    [isEmbeddedInCPAMC, t],
+    () => getUsageTabOptions(t, { includeRanking: !isEmbeddedInCPAMC, capabilities: sourceCapabilities }),
+    [isEmbeddedInCPAMC, sourceCapabilities, t],
   );
   const apiKeySelectOptions = useMemo(
     () => [
@@ -1026,7 +1105,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (topNotice.kind === 'success') return styles.updateCheckToastSuccess;
     return styles.updateCheckToastInfo;
   })() : '';
-  const cpaManagementURL = useMemo(() => getBackToCPALinkURL(status), [status]);
+  const cpaManagementURL = useMemo(
+    () => sourceCapabilities.cpaAuthFiles || sourceCapabilities.cpaQuota ? getBackToCPALinkURL(status) : '',
+    [sourceCapabilities.cpaAuthFiles, sourceCapabilities.cpaQuota, status],
+  );
 
   const loadApiKeyOptions = useCallback(async () => {
     apiKeyOptionsRequestControllerRef.current?.abort();
@@ -1035,7 +1117,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setApiKeyOptionsLoaded(false);
     setApiKeyOptionsResolved(false);
     try {
-      const response = await fetchCpaApiKeyOptions(controller.signal);
+      const response = await fetchUsageAPIKeyOptions(controller.signal);
       if (apiKeyOptionsRequestControllerRef.current !== controller) {
         return;
       }
@@ -1371,12 +1453,29 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [onAuthRequired]);
 
   useEffect(() => {
+    // Wait for status so LiteLLM never probes CPA-only routes. The generic
+    // options endpoint then supplies either CPA keys or virtual-key hashes.
+    if (status === null) return undefined;
+    if (!sourceCapabilities.apiKeyAnalytics) {
+      setApiKeyOptions([]);
+      setApiKeyOptionsLoaded(true);
+      setApiKeyOptionsResolved(true);
+      return undefined;
+    }
     void loadApiKeyOptions();
     return () => {
       apiKeyOptionsRequestControllerRef.current?.abort();
       apiKeyOptionsRequestControllerRef.current = null;
     };
-  }, [loadApiKeyOptions]);
+  }, [loadApiKeyOptions, sourceCapabilities.apiKeyAnalytics, status]);
+
+  useEffect(() => {
+    if (status === null) return;
+    const nextTab = resolveAvailableUsageTab(activeTab, sourceCapabilities, { includeRanking: !isEmbeddedInCPAMC });
+    if (nextTab !== activeTab) {
+      activateUsageTab(nextTab);
+    }
+  }, [activeTab, activateUsageTab, isEmbeddedInCPAMC, sourceCapabilities, status]);
 
   useEffect(() => {
     if (shouldResetSelectedApiKeyFilter(selectedApiKeyId, apiKeyOptions, apiKeyOptionsLoaded)) {
@@ -1675,11 +1774,15 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       return;
     }
     if (activeTab === 'settings') {
-      await Promise.all([loadAuthSessions(), loadApiKeySettings(), loadPricing()]);
+      const requests = [loadAuthSessions(), loadPricing()];
+      if (settingsSectionVisibility.showCPAAPIKeySettings) {
+        requests.push(loadApiKeySettings());
+      }
+      await Promise.all(requests);
       return;
     }
     await Promise.all([loadUsage(), loadActivity(), loadRealtime()]);
-  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadEventFilterOptions, loadEvents, loadPricing, loadRealtime, loadUsage, refreshCredentials, refreshRanking]);
+  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadEventFilterOptions, loadEvents, loadPricing, loadRealtime, loadUsage, refreshCredentials, refreshRanking, settingsSectionVisibility.showCPAAPIKeySettings]);
 
   const refreshAutoRefreshTab = useCallback(async () => {
     if (!apiKeyFilterReady && shouldShowRangeControls(activeTab)) return;
@@ -1843,7 +1946,9 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       setAuthSessionsLoading(false);
       return;
     }
-    void loadApiKeySettings();
+    if (settingsSectionVisibility.showCPAAPIKeySettings) {
+      void loadApiKeySettings();
+    }
     void loadAuthSessions();
     return () => {
       apiKeySettingsRequestControllerRef.current?.abort();
@@ -1851,7 +1956,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       authSessionsRequestControllerRef.current?.abort();
       authSessionsRequestControllerRef.current = null;
     };
-  }, [activeTab, loadApiKeySettings, loadAuthSessions]);
+  }, [activeTab, loadApiKeySettings, loadAuthSessions, settingsSectionVisibility.showCPAAPIKeySettings]);
 
   useEffect(() => {
     const next = sanitizeRequestEventFilters(
@@ -2122,8 +2227,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             {activeTab === 'overview' && error && <div className={styles.errorBox}>{error === 'AUTH_REQUIRED' ? t('auth.session_expired') : error}</div>}
             {activeTab === 'settings' && pricingError && <div className={styles.errorBox}>{pricingError === 'AUTH_REQUIRED' ? t('auth.session_expired') : pricingError}</div>}
             {activeTab === 'settings' && authSessionsError && <div className={styles.errorBox}>{authSessionsError}</div>}
-            {activeTab === 'settings' && apiKeySettingsError && <div className={styles.errorBox}>{apiKeySettingsError}</div>}
-            {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (pricingError || authSessionsError || apiKeySettingsError) : '') && displayStatusError && <div className={styles.errorBox}>{displayStatusError}</div>}
+            {activeTab === 'settings' && settingsSectionVisibility.showCPAAPIKeySettings && apiKeySettingsError && <div className={styles.errorBox}>{apiKeySettingsError}</div>}
+            {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (pricingError || authSessionsError || (settingsSectionVisibility.showCPAAPIKeySettings ? apiKeySettingsError : '')) : '') && displayStatusError && <div className={styles.errorBox}>{displayStatusError}</div>}
 
             {activeTab === 'overview' && (
               <>
@@ -2323,13 +2428,15 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onLogout={handleRevokeAuthSession}
                   onSaveAlias={handleSaveAuthSessionAlias}
                 />
-                <ApiKeySettingsCard
-                  apiKeys={apiKeySettings}
-                  loading={apiKeySettingsLoading}
-                  savingId={apiKeySettingsSavingId}
-                  onSaveAlias={handleSaveApiKeyAlias}
-                  onNotice={showTopNotice}
-                />
+                {settingsSectionVisibility.showCPAAPIKeySettings && (
+                  <ApiKeySettingsCard
+                    apiKeys={apiKeySettings}
+                    loading={apiKeySettingsLoading}
+                    savingId={apiKeySettingsSavingId}
+                    onSaveAlias={handleSaveApiKeyAlias}
+                    onNotice={showTopNotice}
+                  />
+                )}
                 <PriceSettingsCard
                   modelNames={modelNames}
                   modelPrices={modelPrices}

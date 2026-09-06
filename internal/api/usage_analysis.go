@@ -147,7 +147,7 @@ type analysisAPIKeyInfo struct {
 	Label string
 }
 
-func registerUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider) {
+func registerUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider, identityProvider ...service.UsageAPIKeyIdentityProvider) {
 	router.GET("/usage/analysis", func(c *gin.Context) {
 		if usageProvider == nil {
 			c.JSON(http.StatusOK, emptyAnalysisResponse())
@@ -165,7 +165,7 @@ func registerUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageP
 			writeInternalError(c, "get analysis failed", err)
 			return
 		}
-		apiKeyInfos, err := loadCPAAPIKeyInfos(c, cpaAPIKeyProvider)
+		apiKeyInfos, err := loadAPIKeyInfos(c, cpaAPIKeyProvider, firstUsageAPIKeyIdentityProvider(identityProvider))
 		if err != nil {
 			return
 		}
@@ -281,19 +281,36 @@ func emptyAnalysisLatencyDiagnosticsResponse() analysisLatencyDiagnostics {
 }
 
 func loadCPAAPIKeyInfos(c *gin.Context, provider service.CPAAPIKeyProvider) (map[string]analysisAPIKeyInfo, error) {
-	if provider == nil {
-		return map[string]analysisAPIKeyInfo{}, nil
+	return loadAPIKeyInfos(c, provider, nil)
+}
+
+func firstUsageAPIKeyIdentityProvider(providers []service.UsageAPIKeyIdentityProvider) service.UsageAPIKeyIdentityProvider {
+	if len(providers) == 0 {
+		return nil
 	}
-	rows, err := provider.ListCPAAPIKeys(c.Request.Context())
-	if err != nil {
-		writeInternalError(c, "list api key options failed", err)
-		return nil, err
+	return providers[0]
+}
+
+func loadAPIKeyInfos(c *gin.Context, provider service.CPAAPIKeyProvider, identityProvider service.UsageAPIKeyIdentityProvider) (map[string]analysisAPIKeyInfo, error) {
+	infos := map[string]analysisAPIKeyInfo{}
+	if provider != nil {
+		rows, err := provider.ListCPAAPIKeys(c.Request.Context())
+		if err != nil {
+			writeInternalError(c, "list api key options failed", err)
+			return nil, err
+		}
+		for _, row := range rows {
+			infos[row.APIKey] = analysisAPIKeyInfo{ID: strconv.FormatInt(row.ID, 10), Label: helper.CPAAPIKeyDisplayName(row)}
+		}
 	}
-	infos := make(map[string]analysisAPIKeyInfo, len(rows))
-	for _, row := range rows {
-		infos[row.APIKey] = analysisAPIKeyInfo{
-			ID:    strconv.FormatInt(row.ID, 10),
-			Label: helper.CPAAPIKeyDisplayName(row),
+	if identityProvider != nil {
+		rows, err := identityProvider.ListUsageAPIKeyIdentities(c.Request.Context())
+		if err != nil {
+			writeInternalError(c, "list usage api key identities failed", err)
+			return nil, err
+		}
+		for _, row := range rows {
+			infos[row.APIGroupKey] = analysisAPIKeyInfo{ID: service.UsageAPIKeyIdentityFilterID(row.ID), Label: row.APIGroupKey}
 		}
 	}
 	return infos, nil

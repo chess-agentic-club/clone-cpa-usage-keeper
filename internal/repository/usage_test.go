@@ -10,6 +10,7 @@ import (
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/entities"
 	repodto "cpa-usage-keeper/internal/repository/dto"
+	"cpa-usage-keeper/internal/timeutil"
 	"gorm.io/gorm"
 )
 
@@ -304,6 +305,48 @@ func TestBuildAnalysisWithFilterExcludesMissingAndDeletedCPAAPIKeys(t *testing.T
 	}
 	if len(analysis.TokenUsage) != 1 || analysis.TokenUsage[0].TotalTokens != 30 || analysis.TokenUsage[0].Requests != 2 {
 		t.Fatalf("expected token usage from active CPA API key only, got %+v", analysis.TokenUsage)
+	}
+}
+
+func TestBuildAnalysisWithFilterIncludesExternalAPIKeyIdentity(t *testing.T) {
+	db := openUsageTestDatabase(t)
+	bucket := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	apiGroupKey := "litellm:key-hash"
+	inserted, err := InsertExternalUsageEvents(db, "litellm", []entities.UsageEvent{{
+		RequestID:    "litellm-request-1",
+		APIGroupKey:  apiGroupKey,
+		Model:        "gpt-4o",
+		Timestamp:    bucket,
+		InputTokens:  10,
+		OutputTokens: 20,
+		TotalTokens:  30,
+	}})
+	if err != nil || len(inserted) != 1 {
+		t.Fatalf("insert external event = %d, %v; want 1, nil", len(inserted), err)
+	}
+	if err := AggregateUsageOverviewStats(context.Background(), db, bucket.Add(time.Hour)); err != nil {
+		t.Fatalf("aggregate external event: %v", err)
+	}
+	start := bucket
+	end := bucket.Add(time.Hour)
+
+	analysis, err := BuildAnalysisWithFilter(db, repodto.UsageQueryFilter{StartTime: &start, EndTime: &end, APIGroupKey: apiGroupKey}, pricingResolverFromDBForTest(t, db))
+	if err != nil {
+		t.Fatalf("BuildAnalysisWithFilter returned error: %v", err)
+	}
+	if len(analysis.APIKeyComposition) != 1 || analysis.APIKeyComposition[0].Key != apiGroupKey || analysis.APIKeyComposition[0].TotalTokens != 30 {
+		t.Fatalf("expected filtered LiteLLM virtual key analysis without CPA API key, got %+v", analysis.APIKeyComposition)
+	}
+
+	storageBucket := timeutil.NormalizeStorageTime(bucket)
+	dailyStart := time.Date(storageBucket.Year(), storageBucket.Month(), storageBucket.Day(), 0, 0, 0, 0, storageBucket.Location())
+	dailyEnd := dailyStart.AddDate(0, 0, 1)
+	dailyAnalysis, err := BuildAnalysisWithFilter(db, repodto.UsageQueryFilter{Range: "custom", CustomUnit: "day", StartTime: &dailyStart, EndTime: &dailyEnd, APIGroupKey: apiGroupKey}, pricingResolverFromDBForTest(t, db))
+	if err != nil {
+		t.Fatalf("BuildAnalysisWithFilter daily returned error: %v", err)
+	}
+	if len(dailyAnalysis.APIKeyComposition) != 1 || dailyAnalysis.APIKeyComposition[0].Key != apiGroupKey || dailyAnalysis.APIKeyComposition[0].TotalTokens != 30 {
+		t.Fatalf("expected daily LiteLLM virtual key analysis without CPA API key, got %+v", dailyAnalysis.APIKeyComposition)
 	}
 }
 

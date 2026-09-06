@@ -211,6 +211,88 @@ func TestNewWithConfigExposesConfiguredCPAPublicURL(t *testing.T) {
 	}
 }
 
+func TestNewWithConfigLiteLLMGatesCPAOnlyCapabilitiesAndRoutes(t *testing.T) {
+	cfg := testAppConfig(t)
+	cfg.UsageSource = "litellm"
+	cfg.LiteLLMBaseURL = "https://litellm.example.com"
+	cfg.LiteLLMMasterKey = "master-key"
+	cfg.LiteLLMSyncInterval = 10 * time.Second
+	cfg.LiteLLMPageSize = 100
+	cfg.LiteLLMOverlap = 5 * time.Minute
+
+	app, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig returned error: %v", err)
+	}
+	defer app.Close()
+
+	if app.LiteLLMIngest == nil {
+		t.Fatal("expected LiteLLM ingest runner")
+	}
+	if app.RedisIngest != nil || app.RedisProcess != nil || app.CPAErrors != nil || app.MetadataSync != nil || app.QuotaService != nil || app.QuotaAutoRefresh != nil {
+		t.Fatalf("expected LiteLLM mode to omit CPA runtime dependencies: %+v", app)
+	}
+
+	status := httptest.NewRecorder()
+	app.Router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if status.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", status.Code, status.Body.String())
+	}
+	for _, want := range []string{
+		`"usage_source":"litellm"`,
+		`"capabilities":{"api_key_analytics":true,"cpa_auth_files":false,"cpa_quota":false,"litellm_users":false,"litellm_teams":false}`,
+	} {
+		if !strings.Contains(status.Body.String(), want) {
+			t.Fatalf("expected LiteLLM status to include %s, got %s", want, status.Body.String())
+		}
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/auth/api-key-login"},
+		{http.MethodPatch, "/api/v1/auth-files/status"},
+		{http.MethodGet, "/api/v1/quota/inspection"},
+		{http.MethodGet, "/api/v1/usage/api-keys/settings"},
+		{http.MethodGet, "/api/v1/usage/events/:id/request-log"},
+		{http.MethodGet, "/api/v1/usage/identities/:id/errors"},
+	} {
+		if hasAppRoute(app.Router, route.method, route.path) {
+			t.Fatalf("expected LiteLLM to omit %s %s", route.method, route.path)
+		}
+	}
+}
+
+func TestNewWithConfigCLIProxyKeepsCPAOnlyRoutes(t *testing.T) {
+	cfg := testAppConfig(t)
+	cfg.CPARequestLogAccessEnabled = true
+	app, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig returned error: %v", err)
+	}
+	defer app.Close()
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/auth/api-key-login"},
+		{http.MethodPatch, "/api/v1/auth-files/status"},
+		{http.MethodGet, "/api/v1/quota/inspection"},
+		{http.MethodGet, "/api/v1/usage/api-keys/settings"},
+		{http.MethodGet, "/api/v1/usage/events/:id/request-log"},
+		{http.MethodGet, "/api/v1/usage/identities/:id/errors"},
+	} {
+		if !hasAppRoute(app.Router, route.method, route.path) {
+			t.Fatalf("expected CLIProxy to retain %s %s", route.method, route.path)
+		}
+	}
+}
+
+func hasAppRoute(router *gin.Engine, method, path string) bool {
+	for _, route := range router.Routes() {
+		if route.Method == method && route.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNewWithConfigLeavesExistingUsageForBackgroundAggregationRunner(t *testing.T) {
 	// 准备：创建包含未聚合历史事件的旧数据库，并关闭 seed 连接模拟真实重启。
 	dbPath := filepath.Join(t.TempDir(), "app-startup-overview-catchup.db")

@@ -144,7 +144,9 @@ func registerUsageEventsRoute(
 	cpaAPIKeyProvider service.CPAAPIKeyProvider,
 	requestLogProvider service.RequestLogProvider,
 	requestLogDownloadTokens *requestLogDownloadTokenStore,
+	requestLogRoutesEnabled bool,
 	requestLogAccessEnabled bool,
+	identityProviders ...service.UsageAPIKeyIdentityProvider,
 ) {
 	exportSlots := make(chan struct{}, usageEventsExportMaxConcurrency)
 
@@ -194,7 +196,7 @@ func registerUsageEventsRoute(
 			return
 		}
 		resolver := newUsageIdentityResolver(identities)
-		apiKeyInfos, err := loadCPAAPIKeyInfos(c, cpaAPIKeyProvider)
+		apiKeyInfos, err := loadAPIKeyInfos(c, cpaAPIKeyProvider, firstUsageAPIKeyIdentityProvider(identityProviders))
 		if err != nil {
 			return
 		}
@@ -214,54 +216,56 @@ func registerUsageEventsRoute(
 		})
 	})
 
-	router.GET("/usage/events/:id/request-log", func(c *gin.Context) {
-		if !requestLogAccessEnabled {
-			writeUsageEventRequestLogAccessDisabled(c)
-			return
-		}
-		if requestLogProvider == nil {
-			writeInternalError(c, "request log provider is not configured", nil)
-			return
-		}
-		eventID, ok := parseUsageEventRequestLogEventID(c)
-		if !ok {
-			return
-		}
-		response, err := requestLogProvider.GetUsageEventRequestLog(c.Request.Context(), eventID)
-		if err != nil {
-			writeUsageEventRequestLogError(c, err)
-			return
-		}
-		setNoStoreHeaders(c)
-		c.JSON(http.StatusOK, buildUsageEventRequestLogPayload(response))
-	})
+	if requestLogRoutesEnabled {
+		router.GET("/usage/events/:id/request-log", func(c *gin.Context) {
+			if !requestLogAccessEnabled {
+				writeUsageEventRequestLogAccessDisabled(c)
+				return
+			}
+			if requestLogProvider == nil {
+				writeInternalError(c, "request log provider is not configured", nil)
+				return
+			}
+			eventID, ok := parseUsageEventRequestLogEventID(c)
+			if !ok {
+				return
+			}
+			response, err := requestLogProvider.GetUsageEventRequestLog(c.Request.Context(), eventID)
+			if err != nil {
+				writeUsageEventRequestLogError(c, err)
+				return
+			}
+			setNoStoreHeaders(c)
+			c.JSON(http.StatusOK, buildUsageEventRequestLogPayload(response))
+		})
 
-	router.POST("/usage/events/:id/request-log/download-token", func(c *gin.Context) {
-		if !requestLogAccessEnabled {
-			writeUsageEventRequestLogAccessDisabled(c)
-			return
-		}
-		if requestLogProvider == nil {
-			writeInternalError(c, "request log provider is not configured", nil)
-			return
-		}
-		if requestLogDownloadTokens == nil {
-			writeInternalError(c, "request log download token store is not configured", nil)
-			return
-		}
-		eventID, ok := parseUsageEventRequestLogEventID(c)
-		if !ok {
-			return
-		}
-		token, err := requestLogDownloadTokens.issue(eventID)
-		if err != nil {
-			writeInternalError(c, "issue request log download token failed", err)
-			return
-		}
-		downloadURL := strings.TrimSuffix(c.Request.URL.Path, "/download-token") + "/download-file?token=" + url.QueryEscape(token)
-		setNoStoreHeaders(c)
-		c.JSON(http.StatusOK, usageEventRequestLogDownloadTokenPayload{DownloadURL: downloadURL})
-	})
+		router.POST("/usage/events/:id/request-log/download-token", func(c *gin.Context) {
+			if !requestLogAccessEnabled {
+				writeUsageEventRequestLogAccessDisabled(c)
+				return
+			}
+			if requestLogProvider == nil {
+				writeInternalError(c, "request log provider is not configured", nil)
+				return
+			}
+			if requestLogDownloadTokens == nil {
+				writeInternalError(c, "request log download token store is not configured", nil)
+				return
+			}
+			eventID, ok := parseUsageEventRequestLogEventID(c)
+			if !ok {
+				return
+			}
+			token, err := requestLogDownloadTokens.issue(eventID)
+			if err != nil {
+				writeInternalError(c, "issue request log download token failed", err)
+				return
+			}
+			downloadURL := strings.TrimSuffix(c.Request.URL.Path, "/download-token") + "/download-file?token=" + url.QueryEscape(token)
+			setNoStoreHeaders(c)
+			c.JSON(http.StatusOK, usageEventRequestLogDownloadTokenPayload{DownloadURL: downloadURL})
+		})
+	}
 
 	router.GET("/usage/events/export", func(c *gin.Context) {
 		format := strings.ToLower(strings.TrimSpace(c.Query("format")))
@@ -300,7 +304,7 @@ func registerUsageEventsRoute(
 			return
 		}
 		resolver := newUsageIdentityResolver(identities)
-		apiKeyInfos, err := loadCPAAPIKeyInfos(c, cpaAPIKeyProvider)
+		apiKeyInfos, err := loadAPIKeyInfos(c, cpaAPIKeyProvider, firstUsageAPIKeyIdentityProvider(identityProviders))
 		if err != nil {
 			return
 		}

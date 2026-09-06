@@ -35,6 +35,9 @@ func InsertExternalUsageEvents(db *gorm.DB, source string, events []entities.Usa
 				continue
 			}
 			event.SourceSystem = source
+			if err := upsertExternalUsageAPIKeyIdentity(tx, source, event.APIGroupKey); err != nil {
+				return err
+			}
 			event.Timestamp = timeutil.NormalizeStorageTime(event.Timestamp)
 			if err := tx.Create(&event).Error; err != nil {
 				return fmt.Errorf("insert external usage event: %w", err)

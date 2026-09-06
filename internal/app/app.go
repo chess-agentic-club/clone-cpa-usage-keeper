@@ -326,6 +326,30 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		APIKeyViewerLocalRankingEnabled: cfg.APIKeyViewerLocalRankingEnabled,
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
+	capabilities := sourceCapabilitiesFor(cfg)
+	optionalProviders := api.OptionalProviders{
+		UsageIdentity:         usageIdentityService,
+		UsageAPIKeyIdentities: service.NewUsageAPIKeyIdentityService(db),
+		Ranking:               rankingService,
+		LocalRanking:          localRankingService,
+		Status: api.StatusRouteConfig{
+			CPAPublicURL:               cfg.CPAPublicURL,
+			CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,
+			UsageSource:                cfg.UsageSource,
+			Capabilities:               capabilities,
+		},
+	}
+	if capabilities.HasCPAIntegration() {
+		optionalProviders.ErrorEvents = errorEventService
+		optionalProviders.CPAAPIKeys = cpaAPIKeyService
+		optionalProviders.RequestLogs = requestLogService
+	}
+	if capabilities.CPAAuthFiles {
+		optionalProviders.AuthFiles = authFilesManagementService
+	}
+	if capabilities.CPAQuota {
+		optionalProviders.Quota = quotaService
+	}
 
 	application := &App{
 		Config: &cfg,
@@ -357,32 +381,21 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 			authConfig,
 			authHandler,
 			cfg.AppBasePath,
-			api.OptionalProviders{
-				UsageIdentity: usageIdentityService,
-				ErrorEvents:   errorEventService,
-				Quota:         quotaService,
-				CPAAPIKeys:    cpaAPIKeyService,
-				AuthFiles:     authFilesManagementService,
-				RequestLogs:   requestLogService,
-				Ranking:       rankingService,
-				LocalRanking:  localRankingService,
-				Status: api.StatusRouteConfig{
-					CPAPublicURL:               cfg.CPAPublicURL,
-					CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,
-					UsageSource:                cfg.UsageSource,
-				},
-			},
+			optionalProviders,
 		),
 	}
 	if cfg.UsageSource == "litellm" {
 		// LiteLLM has its own HTTP polling runtime. Do not start CPA transport,
 		// quota, auth-file, metadata, or error-stream background jobs in this mode.
-		liteLLMIngest := poller.NewLiteLLMIngestRunner(
+		liteLLMIngest := poller.NewLiteLLMIngestRunnerWithOptions(
 			poller.NewLiteLLMClient(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, cfg.RequestTimeout),
 			db,
-			cfg.LiteLLMSyncInterval,
-			cfg.LiteLLMOverlap,
-			cfg.LiteLLMPageSize,
+			poller.LiteLLMIngestRunnerOptions{
+				Interval: cfg.LiteLLMSyncInterval,
+				Overlap:  cfg.LiteLLMOverlap,
+				PageSize: cfg.LiteLLMPageSize,
+				Notifier: usageAggregationRunner,
+			},
 		)
 		application.Poller = liteLLMIngest
 		application.LiteLLMIngest = liteLLMIngest

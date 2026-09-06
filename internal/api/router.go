@@ -48,18 +48,20 @@ type StatusRouteConfig struct {
 	CPAPublicURL               string
 	CPARequestLogAccessEnabled bool
 	UsageSource                string
+	Capabilities               SourceCapabilities
 }
 
 type OptionalProviders struct {
-	UsageIdentity service.UsageIdentityProvider
-	ErrorEvents   service.ErrorEventProvider
-	Quota         QuotaProvider
-	CPAAPIKeys    service.CPAAPIKeyProvider
-	AuthFiles     service.AuthFilesManagementProvider
-	RequestLogs   service.RequestLogProvider
-	Ranking       rankinghttpapi.Provider
-	LocalRanking  rankinghttpapi.LocalProvider
-	Status        StatusRouteConfig
+	UsageIdentity         service.UsageIdentityProvider
+	UsageAPIKeyIdentities service.UsageAPIKeyIdentityProvider
+	ErrorEvents           service.ErrorEventProvider
+	Quota                 QuotaProvider
+	CPAAPIKeys            service.CPAAPIKeyProvider
+	AuthFiles             service.AuthFilesManagementProvider
+	RequestLogs           service.RequestLogProvider
+	Ranking               rankinghttpapi.Provider
+	LocalRanking          rankinghttpapi.LocalProvider
+	Status                StatusRouteConfig
 }
 
 func NewRouter(
@@ -93,9 +95,9 @@ func NewRouter(
 	if authHandler == nil {
 		authHandler = NewAuthHandler(authConfig, nil)
 	}
-	authHandler.registerRoutes(authGroup)
 
 	var usageIdentityProvider service.UsageIdentityProvider
+	var usageAPIKeyIdentityProvider service.UsageAPIKeyIdentityProvider
 	var errorEventProvider service.ErrorEventProvider
 	var quotaProvider QuotaProvider
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
@@ -106,6 +108,7 @@ func NewRouter(
 	var statusConfig StatusRouteConfig
 	if len(optionalProviders) > 0 {
 		usageIdentityProvider = optionalProviders[0].UsageIdentity
+		usageAPIKeyIdentityProvider = optionalProviders[0].UsageAPIKeyIdentities
 		errorEventProvider = optionalProviders[0].ErrorEvents
 		quotaProvider = optionalProviders[0].Quota
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
@@ -115,10 +118,14 @@ func NewRouter(
 		localRankingProvider = optionalProviders[0].LocalRanking
 		statusConfig = optionalProviders[0].Status
 	}
+	capabilities := sourceCapabilitiesForStatus(statusConfig)
+	authHandler.registerRoutes(authGroup, capabilities.HasCPAIntegration())
 	authHandler.setCPAAPIKeyProvider(cpaAPIKeyProvider)
 	requestLogDownloadTokens := newRequestLogDownloadTokenStore()
 
-	registerUsageEventRequestLogDownloadTokenRoutes(apiV1, requestLogProvider, requestLogDownloadTokens, statusConfig.CPARequestLogAccessEnabled)
+	if capabilities.HasCPAIntegration() {
+		registerUsageEventRequestLogDownloadTokenRoutes(apiV1, requestLogProvider, requestLogDownloadTokens, statusConfig.CPARequestLogAccessEnabled)
+	}
 
 	versionProtected := apiV1.Group("")
 	versionProtected.Use(authHandler.roleMiddleware(auth.RoleAdmin, auth.RoleAPIKeyViewer))
@@ -128,17 +135,26 @@ func NewRouter(
 	adminProtected.Use(authHandler.adminMiddleware())
 	registerStatusRoutes(adminProtected, statusProvider, statusConfig)
 	registerUpdateRoutes(adminProtected, nil)
-	registerUsageOverviewRoute(adminProtected, usageProvider, cpaAPIKeyProvider)
+	registerUsageOverviewRoute(adminProtected, usageProvider, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
 	registerUsageActivityRoute(adminProtected, usageProvider)
-	registerUsageAnalysisRoute(adminProtected, usageProvider, cpaAPIKeyProvider)
-	registerUsageEventsRoute(adminProtected, usageProvider, usageIdentityProvider, cpaAPIKeyProvider, requestLogProvider, requestLogDownloadTokens, statusConfig.CPARequestLogAccessEnabled)
+	registerUsageAnalysisRoute(adminProtected, usageProvider, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
+	registerUsageEventsRoute(adminProtected, usageProvider, usageIdentityProvider, cpaAPIKeyProvider, requestLogProvider, requestLogDownloadTokens, capabilities.HasCPAIntegration(), statusConfig.CPARequestLogAccessEnabled, usageAPIKeyIdentityProvider)
 	registerUsageIdentityRoutes(adminProtected, usageIdentityProvider)
-	registerErrorEventRoutes(adminProtected, errorEventProvider)
-	registerAuthFileManagementRoutes(adminProtected, authFilesProvider)
+	registerUsageAPIKeyOptionRoute(adminProtected, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
+	if capabilities.HasCPAIntegration() {
+		registerErrorEventRoutes(adminProtected, errorEventProvider)
+	}
+	if capabilities.CPAAuthFiles {
+		registerAuthFileManagementRoutes(adminProtected, authFilesProvider)
+	}
 	registerAuthSessionManagementRoutes(adminProtected, authHandler)
-	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider)
+	if capabilities.HasCPAIntegration() {
+		registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider)
+	}
 	registerPricingRoutes(adminProtected, pricingProvider)
-	registerQuotaRoutes(adminProtected, quotaProvider)
+	if capabilities.CPAQuota {
+		registerQuotaRoutes(adminProtected, quotaProvider)
+	}
 	if rankingProvider != nil {
 		rankinghttpapi.RegisterRoutes(adminProtected, rankingProvider)
 	}
@@ -316,15 +332,16 @@ func stripBasePath(basePath, requestPath string) (string, bool) {
 }
 
 type statusResponse struct {
-	Running                    bool   `json:"running"`
-	SyncRunning                bool   `json:"sync_running"`
-	Timezone                   string `json:"timezone"`
-	CPAPublicURL               string `json:"cpa_public_url,omitempty"`
-	CPARequestLogAccessEnabled bool   `json:"cpa_request_log_access_enabled"`
-	UsageSource                string `json:"usage_source"`
-	LastError                  string `json:"last_error,omitempty"`
-	LastWarning                string `json:"last_warning,omitempty"`
-	LastStatus                 string `json:"last_status,omitempty"`
+	Running                    bool               `json:"running"`
+	SyncRunning                bool               `json:"sync_running"`
+	Timezone                   string             `json:"timezone"`
+	CPAPublicURL               string             `json:"cpa_public_url,omitempty"`
+	CPARequestLogAccessEnabled bool               `json:"cpa_request_log_access_enabled"`
+	UsageSource                string             `json:"usage_source"`
+	Capabilities               SourceCapabilities `json:"capabilities"`
+	LastError                  string             `json:"last_error,omitempty"`
+	LastWarning                string             `json:"last_warning,omitempty"`
+	LastStatus                 string             `json:"last_status,omitempty"`
 }
 
 type versionResponse struct {
@@ -358,13 +375,21 @@ func registerStatusRoutes(router gin.IRoutes, statusProvider StatusProvider, con
 }
 
 func buildStatusResponse(status poller.Status, config StatusRouteConfig) statusResponse {
+	capabilities := sourceCapabilitiesForStatus(config)
+	cpaPublicURL := config.CPAPublicURL
+	cpaRequestLogAccessEnabled := config.CPARequestLogAccessEnabled
+	if !capabilities.HasCPAIntegration() {
+		cpaPublicURL = ""
+		cpaRequestLogAccessEnabled = false
+	}
 	response := statusResponse{
 		Running:                    status.Running,
 		SyncRunning:                status.SyncRunning,
 		Timezone:                   time.Local.String(),
-		CPAPublicURL:               config.CPAPublicURL,
-		CPARequestLogAccessEnabled: config.CPARequestLogAccessEnabled,
+		CPAPublicURL:               cpaPublicURL,
+		CPARequestLogAccessEnabled: cpaRequestLogAccessEnabled,
 		UsageSource:                config.UsageSource,
+		Capabilities:               capabilities,
 		LastError:                  status.LastError,
 		LastWarning:                status.LastWarning,
 		LastStatus:                 status.LastStatus,

@@ -5,6 +5,7 @@ func All() []any {
 	return []any{
 		&UsageEvent{},
 		&ExternalUsageReceipt{},
+		&UsageAPIKeyIdentity{},
 		&LiteLLMSyncCheckpoint{},
 		&UsageEventArchive{},
 		&ErrorEvent{},

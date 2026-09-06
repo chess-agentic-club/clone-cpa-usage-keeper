@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,14 @@ import (
 
 	"gorm.io/gorm"
 )
+
+type usageAPIKeyIdentityProviderStub struct {
+	items []entities.UsageAPIKeyIdentity
+}
+
+func (s usageAPIKeyIdentityProviderStub) ListUsageAPIKeyIdentities(_ context.Context) ([]entities.UsageAPIKeyIdentity, error) {
+	return s.items, nil
+}
 
 func TestCPAAPIKeyRoutesReturnDisplayDataWithoutRawKeys(t *testing.T) {
 	db := openCPAAPIKeyAPITestDatabase(t)
@@ -179,6 +188,24 @@ func TestCPAAPIKeyOptionsReturnActiveLabels(t *testing.T) {
 				t.Fatalf("options response included settings-only field %q: %s", key, resp.Body.String())
 			}
 		}
+	}
+}
+
+func TestUsageAPIKeyOptionsIncludeExternalAnalyticsIdentityWithoutCPAProvider(t *testing.T) {
+	router := NewRouter(nil, statusStub{}, nil, nil, AuthConfig{}, nil, "", OptionalProviders{
+		UsageAPIKeyIdentities: usageAPIKeyIdentityProviderStub{items: []entities.UsageAPIKeyIdentity{{
+			ID: 7, SourceSystem: "litellm", APIGroupKey: "litellm:key-hash",
+		}}},
+		Status: StatusRouteConfig{UsageSource: "litellm", Capabilities: SourceCapabilitiesForUsageSource("litellm")},
+	})
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/v1/usage/api-keys/options", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"id":"external:7"`) || !strings.Contains(resp.Body.String(), `"label":"litellm:key-hash"`) {
+		t.Fatalf("expected external analytics option, got %s", resp.Body.String())
 	}
 }
 

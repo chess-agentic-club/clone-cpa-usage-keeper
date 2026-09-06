@@ -308,6 +308,30 @@ func TestListUsageEventsWithFilterMarksCostUnavailableWhenPriceMissing(t *testin
 	}
 }
 
+func TestListUsageEventsWithFilterPrefersProviderReportedCost(t *testing.T) {
+	db, err := OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-events-provider-cost.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	cost := 0.123
+	_, err = InsertExternalUsageEvents(db, "litellm", []entities.UsageEvent{{
+		EventKey: "provider-cost-event", RequestID: "provider-cost-request", SourceSystem: "litellm",
+		APIGroupKey: "litellm:key-hash", Model: "unknown-model", Timestamp: time.Date(2026, 4, 16, 9, 0, 0, 0, time.UTC),
+		TotalTokens: 10, CostUSD: &cost, CostSource: "provider_reported",
+	}})
+	if err != nil {
+		t.Fatalf("InsertExternalUsageEvents returned error: %v", err)
+	}
+	page, err := ListUsageEventsWithFilter(db, dto.UsageQueryFilter{Page: 1, PageSize: 20}, emptyPricingResolverForTest())
+	if err != nil {
+		t.Fatalf("ListUsageEventsWithFilter returned error: %v", err)
+	}
+	if len(page.Events) != 1 || math.Abs(page.Events[0].CostUSD-cost) > 1e-12 || !page.Events[0].CostAvailable || page.Events[0].PricingStyle != "provider_reported" {
+		t.Fatalf("expected provider-reported cost, got %+v", page.Events)
+	}
+}
+
 func TestListUsageEventsWithFilterAppliesAuthIndexFilter(t *testing.T) {
 	db, err := OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-events-auth-filter.db")})
 	if err != nil {
