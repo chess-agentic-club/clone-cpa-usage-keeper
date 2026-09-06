@@ -54,11 +54,12 @@ type App struct {
 	// DB 是统一 GORM 入口：普通查询由 dbresolver 路由到 reader，写入和默认事务留在 writer。
 	DB *gorm.DB
 	// ReadDB 只保留 reader 的生命周期和池状态入口；业务服务不得再自行选择数据库池。
-	ReadDB       *gorm.DB
-	Router       *gin.Engine
-	Poller       StatusProvider
-	RedisIngest  Runner
-	RedisProcess Runner
+	ReadDB        *gorm.DB
+	Router        *gin.Engine
+	Poller        StatusProvider
+	RedisIngest   Runner
+	RedisProcess  Runner
+	LiteLLMIngest Runner
 	// CPAErrors 是完全独立的 best-effort errors 订阅；停止或失败不影响 Usage 与 HTTP。
 	CPAErrors Runner
 	// UsageAggregation 是唯一串行调度三类派生聚合事务的后台 runner。
@@ -326,7 +327,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
 
-	return &App{
+	application := &App{
 		Config: &cfg,
 		// 对外保留单一 DB 入口，现有服务和后台任务不需要感知物理池。
 		DB: db,
@@ -371,7 +372,27 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 				},
 			},
 		),
-	}, nil
+	}
+	if cfg.UsageSource == "litellm" {
+		// LiteLLM has its own HTTP polling runtime. Do not start CPA transport,
+		// quota, auth-file, metadata, or error-stream background jobs in this mode.
+		liteLLMIngest := poller.NewLiteLLMIngestRunner(
+			poller.NewLiteLLMClient(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, cfg.RequestTimeout),
+			db,
+			cfg.LiteLLMSyncInterval,
+			cfg.LiteLLMOverlap,
+			cfg.LiteLLMPageSize,
+		)
+		application.Poller = liteLLMIngest
+		application.LiteLLMIngest = liteLLMIngest
+		application.RedisIngest = nil
+		application.RedisProcess = nil
+		application.CPAErrors = nil
+		application.MetadataSync = nil
+		application.QuotaService = nil
+		application.QuotaAutoRefresh = nil
+	}
+	return application, nil
 }
 
 func frameAncestorOrigins(cfg config.Config) []string {
@@ -465,6 +486,13 @@ func (a *App) Run() error {
 		a.startBackgroundTask(func() {
 			if err := a.RedisProcess.Run(ctx); err != nil {
 				logrus.Errorf("redis process stopped: %v", err)
+			}
+		})
+	}
+	if a.LiteLLMIngest != nil {
+		a.startBackgroundTask(func() {
+			if err := a.LiteLLMIngest.Run(ctx); err != nil {
+				logrus.Errorf("LiteLLM ingest stopped: %v", err)
 			}
 		})
 	}
