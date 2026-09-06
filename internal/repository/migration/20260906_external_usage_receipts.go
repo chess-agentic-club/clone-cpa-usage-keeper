@@ -23,7 +23,7 @@ func createExternalUsageReceiptsMigration(tx *gorm.DB) error {
 			}
 		}
 	}
-	if err := tx.AutoMigrate(&entities.ExternalUsageReceipt{}); err != nil {
+	if err := tx.AutoMigrate(&entities.ExternalUsageReceipt{}, &entities.LiteLLMSyncCheckpoint{}); err != nil {
 		return fmt.Errorf("create external usage receipts: %w", err)
 	}
 	return nil
