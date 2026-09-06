@@ -47,6 +47,7 @@ type QuotaProvider interface {
 type StatusRouteConfig struct {
 	CPAPublicURL               string
 	CPARequestLogAccessEnabled bool
+	UsageSource                string
 }
 
 type OptionalProviders struct {
@@ -320,6 +321,7 @@ type statusResponse struct {
 	Timezone                   string `json:"timezone"`
 	CPAPublicURL               string `json:"cpa_public_url,omitempty"`
 	CPARequestLogAccessEnabled bool   `json:"cpa_request_log_access_enabled"`
+	UsageSource                string `json:"usage_source"`
 	LastError                  string `json:"last_error,omitempty"`
 	LastWarning                string `json:"last_warning,omitempty"`
 	LastStatus                 string `json:"last_status,omitempty"`
@@ -362,6 +364,7 @@ func buildStatusResponse(status poller.Status, config StatusRouteConfig) statusR
 		Timezone:                   time.Local.String(),
 		CPAPublicURL:               config.CPAPublicURL,
 		CPARequestLogAccessEnabled: config.CPARequestLogAccessEnabled,
+		UsageSource:                config.UsageSource,
 		LastError:                  status.LastError,
 		LastWarning:                status.LastWarning,
 		LastStatus:                 status.LastStatus,

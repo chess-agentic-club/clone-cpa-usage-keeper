@@ -43,6 +43,7 @@ export interface StatusResponse {
   timezone: string
   cpa_public_url?: string
   cpa_request_log_access_enabled?: boolean
+  usage_source?: 'cliproxy' | 'litellm'
   last_error?: string
   last_warning?: string
   last_status?: string

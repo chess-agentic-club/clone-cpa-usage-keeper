@@ -369,6 +369,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 				Status: api.StatusRouteConfig{
 					CPAPublicURL:               cfg.CPAPublicURL,
 					CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,
+					UsageSource:                cfg.UsageSource,
 				},
 			},
 		),
