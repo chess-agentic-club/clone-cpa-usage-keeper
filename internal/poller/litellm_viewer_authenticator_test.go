@@ -129,4 +129,9 @@ func TestLiteLLMViewerValidatorAcceptsOnlyCanonicalLiteLLMPrincipal(t *testing.T
 	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned token", DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
 		t.Fatalf("noncanonical-token validation error = %v", err)
 	}
+	for _, apiGroupKey := range []string{"litellm:returned-token ", "litellm:returned-token\x00"} {
+		if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: apiGroupKey, DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+			t.Fatalf("noncanonical API group key %q validation error = %v", apiGroupKey, err)
+		}
+	}
 }

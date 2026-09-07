@@ -100,12 +100,15 @@ func (a *LiteLLMViewerKeyAuthenticator) AuthenticateViewerKey(ctx context.Contex
 // session. Remote validation requires the original virtual key, which is
 // deliberately never retained outside AuthenticateViewerKey.
 func (a *LiteLLMViewerKeyAuthenticator) ValidateViewerPrincipal(_ context.Context, principal auth.ViewerPrincipal) error {
-	principal, err := auth.NormalizeViewerPrincipal(principal)
-	if err != nil || a == nil || principal.SourceSystem != liteLLMSourceSystem {
+	if a == nil || principal.SourceSystem != liteLLMSourceSystem {
 		return auth.ErrViewerPrincipalUnavailable
 	}
 	token := strings.TrimPrefix(principal.APIGroupKey, liteLLMSourceSystem+":")
 	if !isCanonicalLiteLLMToken(token) || principal.APIGroupKey != liteLLMAPIGroupKey(token) {
+		return auth.ErrViewerPrincipalUnavailable
+	}
+	principal, err := auth.NormalizeViewerPrincipal(principal)
+	if err != nil {
 		return auth.ErrViewerPrincipalUnavailable
 	}
 	return nil
