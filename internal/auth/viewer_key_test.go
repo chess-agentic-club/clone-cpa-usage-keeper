@@ -59,7 +59,6 @@ type blockingViewerValidator struct {
 	mu            sync.Mutex
 	validateCalls int
 	firstStarted  chan struct{}
-	secondStarted chan struct{}
 	releaseFirst  chan struct{}
 }
 
@@ -73,19 +72,23 @@ func (v *blockingViewerValidator) ValidateViewerPrincipal(context.Context, Viewe
 		<-v.releaseFirst
 		return nil
 	}
-	close(v.secondStarted)
 	return nil
 }
 
-func TestViewerPrincipalValidationCacheCoalescesConcurrentMisses(t *testing.T) {
+func (v *blockingViewerValidator) calls() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.validateCalls
+}
+
+func TestViewerPrincipalValidationCacheCancelsConcurrentFollowerWithoutSecondValidation(t *testing.T) {
 	validator := &blockingViewerValidator{
-		firstStarted:  make(chan struct{}),
-		secondStarted: make(chan struct{}),
-		releaseFirst:  make(chan struct{}),
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
 	}
 	cache := NewViewerPrincipalValidationCache(time.Minute)
 	principal := ViewerPrincipal{SourceSystem: "source-a", APIGroupKey: "key-1", DisplayName: "Key 1"}
-	results := make(chan error, 2)
+	leaderResult := make(chan error, 1)
 	defer func() {
 		select {
 		case <-validator.releaseFirst:
@@ -94,23 +97,27 @@ func TestViewerPrincipalValidationCacheCoalescesConcurrentMisses(t *testing.T) {
 		}
 	}()
 
-	go func() { results <- cache.Validate(context.Background(), validator, principal) }()
+	go func() { leaderResult <- cache.Validate(context.Background(), validator, principal) }()
 	<-validator.firstStarted
-	go func() { results <- cache.Validate(context.Background(), validator, principal) }()
+	followerContext, cancelFollower := context.WithCancel(context.Background())
+	defer cancelFollower()
+	followerResult := make(chan error, 1)
+	go func() { followerResult <- cache.Validate(followerContext, validator, principal) }()
+	cancelFollower()
 
 	select {
-	case <-validator.secondStarted:
-		t.Fatal("concurrent cache miss started a second validation")
-	case <-time.After(25 * time.Millisecond):
+	case err := <-followerResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled follower error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled follower did not return while leader validation was blocked")
+	}
+	if calls := validator.calls(); calls != 1 {
+		t.Fatalf("validator called %d times after follower reached in-flight wait, want 1", calls)
 	}
 	close(validator.releaseFirst)
-	if err := <-results; err != nil {
-		t.Fatalf("first Validate returned error: %v", err)
-	}
-	if err := <-results; err != nil {
-		t.Fatalf("second Validate returned error: %v", err)
-	}
-	if validator.validateCalls != 1 {
-		t.Fatalf("validator called %d times, want 1", validator.validateCalls)
+	if err := <-leaderResult; err != nil {
+		t.Fatalf("leader Validate returned error: %v", err)
 	}
 }

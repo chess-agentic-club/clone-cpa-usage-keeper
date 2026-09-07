@@ -89,8 +89,12 @@ func (c *ViewerPrincipalValidationCache) Validate(ctx context.Context, validator
 	}
 	if call, ok := c.inFlight[key]; ok {
 		c.mu.Unlock()
-		<-call.done
-		return call.err
+		select {
+		case <-call.done:
+			return call.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	call := &viewerPrincipalValidationCall{done: make(chan struct{})}
 	c.inFlight[key] = call
