@@ -1,6 +1,7 @@
 package test
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -100,6 +101,68 @@ func TestPersistentSessionManagerNormalizesBlankSessionSource(t *testing.T) {
 	}
 	if session.Source != auth.SessionSourceStandard {
 		t.Fatalf("expected blank source to normalize to %q, got %q", auth.SessionSourceStandard, session.Source)
+	}
+}
+
+func TestPersistentSessionManagerPersistsSourceScopedViewerPrincipal(t *testing.T) {
+	db := openAuthSourceDatabase(t)
+	manager := auth.NewPersistentSessionManager(time.Hour, auth.NewGormSessionStore(db))
+	principal := auth.ViewerPrincipal{
+		SourceSystem: "litellm",
+		APIGroupKey:  "cliproxy:principal-7f3a",
+		DisplayName:  "LiteLLM Engineering",
+	}
+	metadata := auth.SessionClientMetadata{IP: "203.0.113.41", UserAgent: "Keeper-Test/1.0"}
+
+	token, _, err := manager.CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(principal, auth.SessionSourceEmbed, metadata)
+	if err != nil {
+		t.Fatalf("create source-scoped viewer session: %v", err)
+	}
+
+	created, ok := manager.Get(token)
+	if !ok {
+		t.Fatal("expected newly created source-scoped viewer session")
+	}
+	assertSourceScopedViewerSession(t, created, principal, auth.SessionSourceEmbed, metadata)
+
+	restarted := auth.NewPersistentSessionManager(time.Hour, auth.NewGormSessionStore(db))
+	persisted, ok := restarted.Get(token)
+	if !ok {
+		t.Fatal("expected source-scoped viewer session after restart")
+	}
+	assertSourceScopedViewerSession(t, persisted, principal, auth.SessionSourceEmbed, metadata)
+
+	records := restarted.List()
+	if len(records) != 1 {
+		t.Fatalf("expected one persisted source-scoped viewer session, got %+v", records)
+	}
+	if records[0].ViewerSourceSystem != principal.SourceSystem || records[0].ViewerAPIGroupKey != principal.APIGroupKey || records[0].ViewerDisplayName != principal.DisplayName || records[0].CPAAPIKeyID != 0 {
+		t.Fatalf("expected listed source-scoped viewer principal with no CPA key ID, got %+v", records[0])
+	}
+}
+
+func TestSessionManagerRejectsIncompleteViewerPrincipalBeforeSaving(t *testing.T) {
+	manager := auth.NewSessionManager(time.Hour)
+
+	_, _, err := manager.CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(auth.ViewerPrincipal{
+		SourceSystem: "litellm",
+		APIGroupKey:  "cliproxy:principal-7f3a",
+	}, auth.SessionSourceStandard, auth.SessionClientMetadata{})
+	if !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+		t.Fatalf("expected incomplete principal rejection, got %v", err)
+	}
+	if records := manager.List(); len(records) != 0 {
+		t.Fatalf("expected incomplete principal not to create a session, got %+v", records)
+	}
+}
+
+func assertSourceScopedViewerSession(t *testing.T, session auth.Session, principal auth.ViewerPrincipal, source auth.SessionSource, metadata auth.SessionClientMetadata) {
+	t.Helper()
+	if session.Role != auth.RoleAPIKeyViewer || session.Source != source || session.ViewerSourceSystem != principal.SourceSystem || session.ViewerAPIGroupKey != principal.APIGroupKey || session.ViewerDisplayName != principal.DisplayName || session.CPAAPIKeyID != 0 {
+		t.Fatalf("unexpected source-scoped viewer session: %+v", session)
+	}
+	if session.LoginIP != metadata.IP || session.LastSeenIP != metadata.IP || session.UserAgent != metadata.UserAgent {
+		t.Fatalf("unexpected source-scoped viewer metadata: %+v", session)
 	}
 }
 

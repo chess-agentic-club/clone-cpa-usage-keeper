@@ -43,18 +43,21 @@ func (s *GormSessionStore) Save(token string, session Session) error {
 		return fmt.Errorf("auth session store is not configured")
 	}
 	row := entities.AuthSession{
-		TokenHash:   sessionTokenHash(token),
-		Role:        string(session.Role),
-		Source:      string(NormalizeSessionSource(session.Source)),
-		Alias:       session.Alias,
-		CPAAPIKeyID: session.CPAAPIKeyID,
-		LoginIP:     session.LoginIP,
-		LastSeenIP:  session.LastSeenIP,
-		UserAgent:   session.UserAgent,
-		LastSeenAt:  sessionTimePointer(session.LastSeenAt),
-		ExpiresAt:   session.ExpiresAt,
-		CreatedAt:   session.CreatedAt,
-		UpdatedAt:   session.CreatedAt,
+		TokenHash:          sessionTokenHash(token),
+		Role:               string(session.Role),
+		Source:             string(NormalizeSessionSource(session.Source)),
+		Alias:              session.Alias,
+		CPAAPIKeyID:        session.CPAAPIKeyID,
+		ViewerSourceSystem: session.ViewerSourceSystem,
+		ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
+		ViewerDisplayName:  session.ViewerDisplayName,
+		LoginIP:            session.LoginIP,
+		LastSeenIP:         session.LastSeenIP,
+		UserAgent:          session.UserAgent,
+		LastSeenAt:         sessionTimePointer(session.LastSeenAt),
+		ExpiresAt:          session.ExpiresAt,
+		CreatedAt:          session.CreatedAt,
+		UpdatedAt:          session.CreatedAt,
 	}
 	return s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "token_hash"}},
@@ -171,6 +174,7 @@ func authSessionFromRow(row entities.AuthSession) (Session, error) {
 	case RoleAPIKeyViewer:
 		return Session{
 			Role: RoleAPIKeyViewer, Source: source, CPAAPIKeyID: row.CPAAPIKeyID,
+			ViewerSourceSystem: row.ViewerSourceSystem, ViewerAPIGroupKey: row.ViewerAPIGroupKey, ViewerDisplayName: row.ViewerDisplayName,
 			LoginIP: row.LoginIP, LastSeenIP: row.LastSeenIP, UserAgent: row.UserAgent,
 			LastSeenAt: lastSeenAt, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
 		}, nil
@@ -185,17 +189,20 @@ func authSessionRecordFromRow(row entities.AuthSession) (SessionRecord, error) {
 		return SessionRecord{}, err
 	}
 	return SessionRecord{
-		TokenHash:   row.TokenHash,
-		Role:        session.Role,
-		Source:      session.Source,
-		Alias:       session.Alias,
-		CPAAPIKeyID: session.CPAAPIKeyID,
-		LoginIP:     session.LoginIP,
-		LastSeenIP:  session.LastSeenIP,
-		UserAgent:   session.UserAgent,
-		LastSeenAt:  session.LastSeenAt,
-		ExpiresAt:   session.ExpiresAt,
-		CreatedAt:   session.CreatedAt,
+		TokenHash:          row.TokenHash,
+		Role:               session.Role,
+		Source:             session.Source,
+		Alias:              session.Alias,
+		CPAAPIKeyID:        session.CPAAPIKeyID,
+		ViewerSourceSystem: session.ViewerSourceSystem,
+		ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
+		ViewerDisplayName:  session.ViewerDisplayName,
+		LoginIP:            session.LoginIP,
+		LastSeenIP:         session.LastSeenIP,
+		UserAgent:          session.UserAgent,
+		LastSeenAt:         session.LastSeenAt,
+		ExpiresAt:          session.ExpiresAt,
+		CreatedAt:          session.CreatedAt,
 	}, nil
 }
 
@@ -230,30 +237,36 @@ func NormalizeSessionSource(source SessionSource) SessionSource {
 }
 
 type Session struct {
-	Role        Role
-	Source      SessionSource
-	Alias       string
-	CPAAPIKeyID int64
-	LoginIP     string
-	LastSeenIP  string
-	UserAgent   string
-	LastSeenAt  time.Time
-	ExpiresAt   time.Time
-	CreatedAt   time.Time
+	Role               Role
+	Source             SessionSource
+	Alias              string
+	CPAAPIKeyID        int64
+	ViewerSourceSystem string
+	ViewerAPIGroupKey  string
+	ViewerDisplayName  string
+	LoginIP            string
+	LastSeenIP         string
+	UserAgent          string
+	LastSeenAt         time.Time
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
 }
 
 type SessionRecord struct {
-	TokenHash   string
-	Role        Role
-	Source      SessionSource
-	Alias       string
-	CPAAPIKeyID int64
-	LoginIP     string
-	LastSeenIP  string
-	UserAgent   string
-	LastSeenAt  time.Time
-	ExpiresAt   time.Time
-	CreatedAt   time.Time
+	TokenHash          string
+	Role               Role
+	Source             SessionSource
+	Alias              string
+	CPAAPIKeyID        int64
+	ViewerSourceSystem string
+	ViewerAPIGroupKey  string
+	ViewerDisplayName  string
+	LoginIP            string
+	LastSeenIP         string
+	UserAgent          string
+	LastSeenAt         time.Time
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
 }
 
 type SessionClientMetadata struct {
@@ -323,6 +336,22 @@ func (m *SessionManager) CreateAPIKeyViewerWithSource(cpaAPIKeyID int64, source 
 
 func (m *SessionManager) CreateAPIKeyViewerWithSourceAndMetadata(cpaAPIKeyID int64, source SessionSource, metadata SessionClientMetadata) (string, time.Time, error) {
 	return m.create(Session{Role: RoleAPIKeyViewer, Source: NormalizeSessionSource(source), CPAAPIKeyID: cpaAPIKeyID}, metadata)
+}
+
+// CreateAPIKeyViewerForPrincipalWithSourceAndMetadata persists a viewer
+// identity owned by an external source without retaining its raw credential.
+func (m *SessionManager) CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(principal ViewerPrincipal, source SessionSource, metadata SessionClientMetadata) (string, time.Time, error) {
+	principal, err := NormalizeViewerPrincipal(principal)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return m.create(Session{
+		Role:               RoleAPIKeyViewer,
+		Source:             NormalizeSessionSource(source),
+		ViewerSourceSystem: principal.SourceSystem,
+		ViewerAPIGroupKey:  principal.APIGroupKey,
+		ViewerDisplayName:  principal.DisplayName,
+	}, metadata)
 }
 
 func (m *SessionManager) create(session Session, metadata SessionClientMetadata) (string, time.Time, error) {
@@ -477,17 +506,20 @@ func (m *SessionManager) List() []SessionRecord {
 	records := make([]SessionRecord, 0, len(m.sessions))
 	for token, session := range m.sessions {
 		records = append(records, SessionRecord{
-			TokenHash:   sessionTokenHash(token),
-			Role:        session.Role,
-			Source:      NormalizeSessionSource(session.Source),
-			Alias:       session.Alias,
-			CPAAPIKeyID: session.CPAAPIKeyID,
-			LoginIP:     session.LoginIP,
-			LastSeenIP:  session.LastSeenIP,
-			UserAgent:   session.UserAgent,
-			LastSeenAt:  session.LastSeenAt,
-			ExpiresAt:   session.ExpiresAt,
-			CreatedAt:   session.CreatedAt,
+			TokenHash:          sessionTokenHash(token),
+			Role:               session.Role,
+			Source:             NormalizeSessionSource(session.Source),
+			Alias:              session.Alias,
+			CPAAPIKeyID:        session.CPAAPIKeyID,
+			ViewerSourceSystem: session.ViewerSourceSystem,
+			ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
+			ViewerDisplayName:  session.ViewerDisplayName,
+			LoginIP:            session.LoginIP,
+			LastSeenIP:         session.LastSeenIP,
+			UserAgent:          session.UserAgent,
+			LastSeenAt:         session.LastSeenAt,
+			ExpiresAt:          session.ExpiresAt,
+			CreatedAt:          session.CreatedAt,
 		})
 	}
 	sort.Slice(records, func(i, j int) bool {
