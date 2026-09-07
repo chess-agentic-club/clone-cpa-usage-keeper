@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,8 +63,11 @@ func TestCPAAPIKeyServiceViewerAdapterReturnsCanonicalActiveKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthenticateViewerKey returned error: %v", err)
 	}
-	if principal.SourceSystem != "cliproxy" || principal.APIGroupKey != "sk-active123456" || principal.DisplayName == "" || principal.DisplayName == "sk-active123456" {
-		t.Fatal("CLIProxy adapter did not return the established canonical key with a safe display label")
+	if principal.SourceSystem != "cliproxy" || principal.APIGroupKey != "cliproxy:1" || strings.Contains(principal.APIGroupKey, "sk-active123456") || principal.DisplayName == "" || principal.DisplayName == "sk-active123456" {
+		t.Fatal("CLIProxy adapter did not return an opaque record identity with a safe display label")
+	}
+	if err := adapter.ValidateViewerPrincipal(context.Background(), principal); err != nil {
+		t.Fatalf("ValidateViewerPrincipal returned error: %v", err)
 	}
 
 	if _, err := adapter.AuthenticateViewerKey(context.Background(), "sk-inactive123456"); !errors.Is(err, auth.ErrInvalidViewerCredentials) {

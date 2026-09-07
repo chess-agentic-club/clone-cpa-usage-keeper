@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"cpa-usage-keeper/internal/auth"
@@ -17,6 +19,10 @@ import (
 var ErrInvalidID = errors.New("invalid id")
 
 const CLIProxyViewerSourceSystem = "cliproxy"
+
+func cliProxyViewerAPIGroupKey(id int64) string {
+	return fmt.Sprintf("%s:%d", CLIProxyViewerSourceSystem, id)
+}
 
 type CPAAPIKeyProvider interface {
 	ListCPAAPIKeys(ctx context.Context) ([]entities.CPAAPIKey, error)
@@ -56,7 +62,7 @@ func (a *cpaAPIKeyViewerAdapter) AuthenticateViewerKey(ctx context.Context, rawK
 	}
 	principal, err := auth.NormalizeViewerPrincipal(auth.ViewerPrincipal{
 		SourceSystem: CLIProxyViewerSourceSystem,
-		APIGroupKey:  row.APIKey,
+		APIGroupKey:  cliProxyViewerAPIGroupKey(row.ID),
 		DisplayName:  helper.CPAAPIKeyDisplayName(row),
 	})
 	if err != nil {
@@ -70,8 +76,12 @@ func (a *cpaAPIKeyViewerAdapter) ValidateViewerPrincipal(ctx context.Context, pr
 	if err != nil || principal.SourceSystem != CLIProxyViewerSourceSystem || a == nil || a.provider == nil {
 		return auth.ErrViewerPrincipalUnavailable
 	}
-	row, err := a.provider.FindActiveCPAAPIKeyByValue(ctx, principal.APIGroupKey)
-	if err != nil || row.APIKey != principal.APIGroupKey {
+	idValue := strings.TrimPrefix(principal.APIGroupKey, CLIProxyViewerSourceSystem+":")
+	id, parseErr := strconv.ParseInt(idValue, 10, 64)
+	if !strings.HasPrefix(principal.APIGroupKey, CLIProxyViewerSourceSystem+":") || parseErr != nil || id <= 0 || principal.APIGroupKey != cliProxyViewerAPIGroupKey(id) {
+		return auth.ErrViewerPrincipalUnavailable
+	}
+	if _, err := a.provider.FindActiveCPAAPIKeyByID(ctx, id); err != nil {
 		return auth.ErrViewerPrincipalUnavailable
 	}
 	return nil

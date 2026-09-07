@@ -49,13 +49,23 @@ type viewerPrincipalCacheKey struct {
 // ViewerPrincipalValidationCache caches only successful validation of the
 // non-secret source and canonical group identity.
 type ViewerPrincipalValidationCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[viewerPrincipalCacheKey]time.Time
+	mu       sync.Mutex
+	ttl      time.Duration
+	entries  map[viewerPrincipalCacheKey]time.Time
+	inFlight map[viewerPrincipalCacheKey]*viewerPrincipalValidationCall
+}
+
+type viewerPrincipalValidationCall struct {
+	done chan struct{}
+	err  error
 }
 
 func NewViewerPrincipalValidationCache(ttl time.Duration) *ViewerPrincipalValidationCache {
-	return &ViewerPrincipalValidationCache{ttl: ttl, entries: make(map[viewerPrincipalCacheKey]time.Time)}
+	return &ViewerPrincipalValidationCache{
+		ttl:      ttl,
+		entries:  make(map[viewerPrincipalCacheKey]time.Time),
+		inFlight: make(map[viewerPrincipalCacheKey]*viewerPrincipalValidationCall),
+	}
 }
 
 func (c *ViewerPrincipalValidationCache) Validate(ctx context.Context, validator ViewerPrincipalValidator, principal ViewerPrincipal) error {
@@ -68,23 +78,31 @@ func (c *ViewerPrincipalValidationCache) Validate(ctx context.Context, validator
 	}
 
 	key := viewerPrincipalCacheKey{sourceSystem: principal.SourceSystem, apiGroupKey: principal.APIGroupKey}
-	now := time.Now()
-	if c != nil && c.ttl > 0 {
-		c.mu.Lock()
-		expiresAt, ok := c.entries[key]
-		c.mu.Unlock()
-		if ok && now.Before(expiresAt) {
-			return nil
-		}
+	if c == nil || c.ttl <= 0 {
+		return validator.ValidateViewerPrincipal(ctx, principal)
 	}
 
-	if err := validator.ValidateViewerPrincipal(ctx, principal); err != nil {
-		return err
-	}
-	if c != nil && c.ttl > 0 {
-		c.mu.Lock()
-		c.entries[key] = now.Add(c.ttl)
+	c.mu.Lock()
+	if expiresAt, ok := c.entries[key]; ok && time.Now().Before(expiresAt) {
 		c.mu.Unlock()
+		return nil
 	}
-	return nil
+	if call, ok := c.inFlight[key]; ok {
+		c.mu.Unlock()
+		<-call.done
+		return call.err
+	}
+	call := &viewerPrincipalValidationCall{done: make(chan struct{})}
+	c.inFlight[key] = call
+	c.mu.Unlock()
+
+	call.err = validator.ValidateViewerPrincipal(ctx, principal)
+	c.mu.Lock()
+	if call.err == nil {
+		c.entries[key] = time.Now().Add(c.ttl)
+	}
+	delete(c.inFlight, key)
+	close(call.done)
+	c.mu.Unlock()
+	return call.err
 }
