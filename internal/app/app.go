@@ -310,7 +310,14 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	if cfg.TLSSkipVerify {
 		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")
 	}
-	pricingService := service.NewPricingService(db, pricingCatalog, cpaClient)
+	// LiteLLM deployments are independent of CPA. The pricing page can still
+	// list models observed in the local usage store, but must not probe CPA's
+	// management API when it enriches that list.
+	var pricingModelsFetcher service.ModelsFetcher
+	if cfg.UsageSource == "cliproxy" {
+		pricingModelsFetcher = cpaClient
+	}
+	pricingService := service.NewPricingService(db, pricingCatalog, pricingModelsFetcher)
 	sessionManager := auth.NewSessionManager(cfg.AuthSessionTTL)
 	if cfg.AuthEnabled {
 		// Session Get/List 自动走 reader，Save/Delete 仍由写回调路由到唯一 writer。
