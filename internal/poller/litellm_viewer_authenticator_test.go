@@ -25,8 +25,8 @@ func TestLiteLLMViewerAuthenticatesVirtualKeyFromKeyInfo(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+liteLLMVirtualKey {
 			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
 		}
-		if r.URL.Query().Get("key") != "" {
-			t.Fatalf("key must not be sent in query: %s", r.URL.RawQuery)
+		if r.URL.RawQuery != "" {
+			t.Fatalf("request must not contain a query: %s", r.URL.RawQuery)
 		}
 		_, _ = io.WriteString(w, fmt.Sprintf(`{"info":{"token":"returned-token","key_name":"  Engineering key  ","key_alias":"  Engineering  ","blocked":false,"expires":%q}}`, expires))
 	}))
@@ -38,6 +38,10 @@ func TestLiteLLMViewerAuthenticatesVirtualKeyFromKeyInfo(t *testing.T) {
 	}
 	if principal != (auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned-token", DisplayName: "Engineering"}) {
 		t.Fatalf("principal = %+v", principal)
+	}
+	event, err := MapLiteLLMSpendLog(LiteLLMSpendLog{RequestID: "req-1", APIKey: "returned-token"})
+	if err != nil || event.APIGroupKey != principal.APIGroupKey {
+		t.Fatalf("mapper identity = %q, %v; principal identity = %q", event.APIGroupKey, err, principal.APIGroupKey)
 	}
 }
 
@@ -54,6 +58,8 @@ func TestLiteLLMViewerAuthenticationRejectsInvalidKeyInfoWithoutLeakingSecret(t 
 		{name: "not found", response: `{"error":"missing key"}`, status: http.StatusNotFound},
 		{name: "blocked", response: fmt.Sprintf(`{"info":{"token":"returned-token","key_name":"Engineering","key_alias":"Engineering","blocked":true,"expires":%q}}`, futureExpiry), status: http.StatusOK},
 		{name: "expired", response: fmt.Sprintf(`{"info":{"token":"returned-token","key_name":"Engineering","key_alias":"Engineering","blocked":false,"expires":%q}}`, pastExpiry), status: http.StatusOK},
+		{name: "noncanonical token", response: fmt.Sprintf(`{"info":{"token":"returned token","key_name":"Engineering","key_alias":"Engineering","blocked":false,"expires":%q}}`, futureExpiry), status: http.StatusOK},
+		{name: "trailing JSON", response: fmt.Sprintf(`{"info":{"token":"returned-token","key_name":"Engineering","key_alias":"Engineering","blocked":false,"expires":%q}} {}`, futureExpiry), status: http.StatusOK},
 	}
 
 	for _, tc := range cases {
@@ -75,6 +81,32 @@ func TestLiteLLMViewerAuthenticationRejectsInvalidKeyInfoWithoutLeakingSecret(t 
 	}
 }
 
+func TestLiteLLMViewerAuthenticationRejectsRedirectWithoutFollowingIt(t *testing.T) {
+	redirected := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/key/info":
+			http.Redirect(w, r, "/redirected", http.StatusFound)
+		case "/redirected":
+			redirected <- struct{}{}
+			_, _ = io.WriteString(w, `{"info":{"token":"returned-token","key_name":"Engineering","key_alias":"Engineering","blocked":false}}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	_, err := NewLiteLLMViewerKeyAuthenticator(server.URL, time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
+	if !errors.Is(err, auth.ErrInvalidViewerCredentials) {
+		t.Fatalf("error = %v, want invalid viewer credentials", err)
+	}
+	select {
+	case <-redirected:
+		t.Fatal("client followed redirect")
+	default:
+	}
+}
+
 func TestLiteLLMViewerAuthenticationTransportErrorDoesNotLeakSecret(t *testing.T) {
 	_, err := NewLiteLLMViewerKeyAuthenticator("http://127.0.0.1:1", time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
 	if !errors.Is(err, auth.ErrInvalidViewerCredentials) {
@@ -93,5 +125,8 @@ func TestLiteLLMViewerValidatorAcceptsOnlyCanonicalLiteLLMPrincipal(t *testing.T
 	}
 	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "cliproxy", APIGroupKey: "litellm:returned-token", DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
 		t.Fatalf("wrong-source validation error = %v", err)
+	}
+	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned token", DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+		t.Fatalf("noncanonical-token validation error = %v", err)
 	}
 }

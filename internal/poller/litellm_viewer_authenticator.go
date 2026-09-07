@@ -3,9 +3,11 @@ package poller
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"cpa-usage-keeper/internal/auth"
 )
@@ -32,7 +34,12 @@ type liteLLMVirtualKeyInfo struct {
 func NewLiteLLMViewerKeyAuthenticator(baseURL string, timeout time.Duration) *LiteLLMViewerKeyAuthenticator {
 	return &LiteLLMViewerKeyAuthenticator{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -55,16 +62,20 @@ func (a *LiteLLMViewerKeyAuthenticator) AuthenticateViewerKey(ctx context.Contex
 		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
 	}
 
+	decoder := json.NewDecoder(resp.Body)
 	var payload liteLLMKeyInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := decoder.Decode(&payload); err != nil {
+		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
 	}
 	info := payload.Info
 	if info.Blocked || (info.Expires != nil && !info.Expires.After(time.Now())) {
 		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
 	}
-	token := strings.TrimSpace(info.Token)
-	if token == "" {
+	token := info.Token
+	if !isCanonicalLiteLLMToken(token) {
 		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
 	}
 	displayName := strings.TrimSpace(info.KeyAlias)
@@ -94,8 +105,20 @@ func (a *LiteLLMViewerKeyAuthenticator) ValidateViewerPrincipal(_ context.Contex
 		return auth.ErrViewerPrincipalUnavailable
 	}
 	token := strings.TrimPrefix(principal.APIGroupKey, liteLLMSourceSystem+":")
-	if token == "" || principal.APIGroupKey != liteLLMAPIGroupKey(token) {
+	if !isCanonicalLiteLLMToken(token) || principal.APIGroupKey != liteLLMAPIGroupKey(token) {
 		return auth.ErrViewerPrincipalUnavailable
 	}
 	return nil
+}
+
+func isCanonicalLiteLLMToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, character := range token {
+		if unicode.IsSpace(character) || unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
