@@ -12,6 +12,12 @@ import (
 	"cpa-usage-keeper/internal/entities"
 )
 
+const liteLLMSourceSystem = "litellm"
+
+func liteLLMAPIGroupKey(token string) string {
+	return liteLLMSourceSystem + ":" + token
+}
+
 type LiteLLMSpendLog struct {
 	RequestID        string    `json:"request_id"`
 	APIKey           string    `json:"api_key"`
@@ -88,5 +94,5 @@ func MapLiteLLMSpendLog(log LiteLLMSpendLog) (entities.UsageEvent, error) {
 		model = log.ModelGroup
 	}
 	cost := log.Spend
-	return entities.UsageEvent{EventKey: log.RequestID, RequestID: log.RequestID, APIGroupKey: "litellm:" + log.APIKey, Source: "litellm", SourceSystem: "litellm", Provider: log.Provider, Model: model, Timestamp: log.StartTime, InputTokens: log.PromptTokens, OutputTokens: log.CompletionTokens, TotalTokens: log.TotalTokens, CostUSD: &cost, CostSource: "provider_reported"}, nil
+	return entities.UsageEvent{EventKey: log.RequestID, RequestID: log.RequestID, APIGroupKey: liteLLMAPIGroupKey(log.APIKey), Source: liteLLMSourceSystem, SourceSystem: liteLLMSourceSystem, Provider: log.Provider, Model: model, Timestamp: log.StartTime, InputTokens: log.PromptTokens, OutputTokens: log.CompletionTokens, TotalTokens: log.TotalTokens, CostUSD: &cost, CostSource: "provider_reported"}, nil
 }
