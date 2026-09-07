@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 
+	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/repository"
 
 	"gorm.io/gorm"
@@ -13,6 +15,8 @@ import (
 )
 
 var ErrInvalidID = errors.New("invalid id")
+
+const CLIProxyViewerSourceSystem = "cliproxy"
 
 type CPAAPIKeyProvider interface {
 	ListCPAAPIKeys(ctx context.Context) ([]entities.CPAAPIKey, error)
@@ -27,6 +31,50 @@ type cpaAPIKeyService struct {
 
 func NewCPAAPIKeyService(db *gorm.DB) CPAAPIKeyProvider {
 	return &cpaAPIKeyService{db: db}
+}
+
+type cpaAPIKeyViewerAdapter struct {
+	provider CPAAPIKeyProvider
+}
+
+// NewCPAAPIKeyViewerAdapter exposes existing active CPA API keys through the
+// source-neutral viewer authentication contract.
+func NewCPAAPIKeyViewerAdapter(provider CPAAPIKeyProvider) interface {
+	auth.ViewerKeyAuthenticator
+	auth.ViewerPrincipalValidator
+} {
+	return &cpaAPIKeyViewerAdapter{provider: provider}
+}
+
+func (a *cpaAPIKeyViewerAdapter) AuthenticateViewerKey(ctx context.Context, rawKey string) (auth.ViewerPrincipal, error) {
+	if a == nil || a.provider == nil {
+		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
+	}
+	row, err := a.provider.FindActiveCPAAPIKeyByValue(ctx, rawKey)
+	if err != nil {
+		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
+	}
+	principal, err := auth.NormalizeViewerPrincipal(auth.ViewerPrincipal{
+		SourceSystem: CLIProxyViewerSourceSystem,
+		APIGroupKey:  row.APIKey,
+		DisplayName:  helper.CPAAPIKeyDisplayName(row),
+	})
+	if err != nil {
+		return auth.ViewerPrincipal{}, auth.ErrInvalidViewerCredentials
+	}
+	return principal, nil
+}
+
+func (a *cpaAPIKeyViewerAdapter) ValidateViewerPrincipal(ctx context.Context, principal auth.ViewerPrincipal) error {
+	principal, err := auth.NormalizeViewerPrincipal(principal)
+	if err != nil || principal.SourceSystem != CLIProxyViewerSourceSystem || a == nil || a.provider == nil {
+		return auth.ErrViewerPrincipalUnavailable
+	}
+	row, err := a.provider.FindActiveCPAAPIKeyByValue(ctx, principal.APIGroupKey)
+	if err != nil || row.APIKey != principal.APIGroupKey {
+		return auth.ErrViewerPrincipalUnavailable
+	}
+	return nil
 }
 
 func (s *cpaAPIKeyService) ListCPAAPIKeys(context.Context) ([]entities.CPAAPIKey, error) {

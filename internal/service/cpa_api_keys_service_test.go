@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/repository"
 
@@ -35,6 +36,38 @@ func TestFindActiveCPAAPIKeyByValueTrimsInputAndQueriesActiveRow(t *testing.T) {
 	}
 	if row.ID != 2 || row.DisplayKey == "" || row.APIKey != "sk-beta123456" {
 		t.Fatalf("unexpected matched row: %+v", row)
+	}
+}
+
+func TestCPAAPIKeyServiceViewerAdapterReturnsCanonicalActiveKey(t *testing.T) {
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "api-keys-viewer-adapter.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, err := db.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	if err := repository.SyncCPAAPIKeys(db, []string{"sk-active123456", "sk-inactive123456"}, time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("seed API keys: %v", err)
+	}
+	if err := repository.SyncCPAAPIKeys(db, []string{"sk-active123456"}, time.Date(2026, 5, 13, 11, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("mark inactive key deleted: %v", err)
+	}
+	adapter := NewCPAAPIKeyViewerAdapter(NewCPAAPIKeyService(db))
+
+	principal, err := adapter.AuthenticateViewerKey(context.Background(), " sk-active123456 ")
+	if err != nil {
+		t.Fatalf("AuthenticateViewerKey returned error: %v", err)
+	}
+	if principal.SourceSystem != "cliproxy" || principal.APIGroupKey != "sk-active123456" || principal.DisplayName == "" || principal.DisplayName == "sk-active123456" {
+		t.Fatal("CLIProxy adapter did not return the established canonical key with a safe display label")
+	}
+
+	if _, err := adapter.AuthenticateViewerKey(context.Background(), "sk-inactive123456"); !errors.Is(err, auth.ErrInvalidViewerCredentials) {
+		t.Fatalf("inactive key error = %v, want generic invalid credentials", err)
 	}
 }
 
