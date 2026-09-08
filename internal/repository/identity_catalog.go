@@ -39,6 +39,17 @@ type SourceAPIKeyInput struct {
 	Active        bool
 }
 
+// IdentityMappingRecord is the safe administrative view of an identity link.
+// It contains opaque catalog IDs and mapping metadata, never JWTs or source
+// credentials.
+type IdentityMappingRecord struct {
+	ExternalIdentityID string
+	SourceSystem       string
+	SourceUserID       string
+	MatchMethod        string
+	Confirmed          bool
+}
+
 func NewCatalogRepository(db *gorm.DB) *CatalogRepository { return &CatalogRepository{db: db} }
 
 // ApplySourceSnapshot atomically replaces the catalog view for one source.
@@ -187,7 +198,20 @@ func (r *CatalogRepository) FindActiveSourceAPIKey(ctx context.Context, sourceSy
 	return key, nil
 }
 
-func (r *CatalogRepository) ListIdentityMappings(ctx context.Context, sourceSystem string) ([]entities.IdentitySourceLink, error) {
+// FindActiveSourceAPIKeyByID resolves an opaque catalog ID within its source.
+// Browser selections use this ID rather than a source key reference.
+func (r *CatalogRepository) FindActiveSourceAPIKeyByID(ctx context.Context, sourceSystem, id string) (entities.SourceAPIKey, error) {
+	if r == nil || r.db == nil {
+		return entities.SourceAPIKey{}, fmt.Errorf("catalog database is nil")
+	}
+	var key entities.SourceAPIKey
+	if err := r.db.WithContext(ctx).Where("source_system = ? AND id = ? AND active = ?", strings.TrimSpace(sourceSystem), strings.TrimSpace(id), true).Where(safeStoredSourceAPIKeyReferencesPredicate).First(&key).Error; err != nil {
+		return entities.SourceAPIKey{}, err
+	}
+	return key, nil
+}
+
+func (r *CatalogRepository) ListIdentityMappings(ctx context.Context, sourceSystem string) ([]IdentityMappingRecord, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("catalog database is nil")
 	}
@@ -195,7 +219,17 @@ func (r *CatalogRepository) ListIdentityMappings(ctx context.Context, sourceSyst
 	if err := r.db.WithContext(ctx).Where("source_system = ?", strings.TrimSpace(sourceSystem)).Order("external_identity_id ASC, id ASC").Find(&links).Error; err != nil {
 		return nil, fmt.Errorf("list identity mappings: %w", err)
 	}
-	return links, nil
+	records := make([]IdentityMappingRecord, 0, len(links))
+	for _, link := range links {
+		records = append(records, IdentityMappingRecord{
+			ExternalIdentityID: link.ExternalIdentityID,
+			SourceSystem:       link.SourceSystem,
+			SourceUserID:       link.SourceUserID,
+			MatchMethod:        link.MatchMethod,
+			Confirmed:          link.Confirmed,
+		})
+	}
+	return records, nil
 }
 
 func (r *CatalogRepository) CatalogSyncState(ctx context.Context, sourceSystem string) (entities.SourceCatalogSyncState, error) {
