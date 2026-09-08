@@ -170,7 +170,7 @@ func (r *CatalogRepository) ListActiveSourceAPIKeys(ctx context.Context, sourceS
 		return nil, fmt.Errorf("catalog database is nil")
 	}
 	var keys []entities.SourceAPIKey
-	if err := r.db.WithContext(ctx).Where("source_system = ? AND active = ?", strings.TrimSpace(sourceSystem), true).Order("source_key_ref ASC, id ASC").Find(&keys).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("source_system = ? AND active = ?", strings.TrimSpace(sourceSystem), true).Where(safeStoredSourceAPIKeyReferencesPredicate).Order("source_key_ref ASC, id ASC").Find(&keys).Error; err != nil {
 		return nil, fmt.Errorf("list active source API keys: %w", err)
 	}
 	return keys, nil
@@ -181,7 +181,7 @@ func (r *CatalogRepository) FindActiveSourceAPIKey(ctx context.Context, sourceSy
 		return entities.SourceAPIKey{}, fmt.Errorf("catalog database is nil")
 	}
 	var key entities.SourceAPIKey
-	if err := r.db.WithContext(ctx).Where("source_system = ? AND source_key_ref = ? AND active = ?", strings.TrimSpace(sourceSystem), strings.TrimSpace(sourceKeyRef), true).First(&key).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("source_system = ? AND source_key_ref = ? AND active = ?", strings.TrimSpace(sourceSystem), strings.TrimSpace(sourceKeyRef), true).Where(safeStoredSourceAPIKeyReferencesPredicate).First(&key).Error; err != nil {
 		return entities.SourceAPIKey{}, err
 	}
 	return key, nil
@@ -353,6 +353,22 @@ func markAbsentSourceAPIKeysInactive(tx *gorm.DB, sourceSystem string, inputs []
 }
 
 func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
+
+const safeStoredSourceAPIKeyReferencesPredicate = `
+	length(source_key_ref) BETWEEN 1 AND 31 AND
+	source_key_ref NOT GLOB '*[^A-Za-z0-9._:-]*' AND
+	lower(source_key_ref) NOT LIKE '%authorization%' AND lower(source_key_ref) NOT LIKE '%bearer%' AND
+	lower(source_key_ref) NOT LIKE '%token%' AND lower(source_key_ref) NOT LIKE '%secret%' AND
+	lower(source_key_ref) NOT LIKE '%master%' AND lower(source_key_ref) NOT LIKE '%api_key%' AND
+	lower(source_key_ref) NOT LIKE '%apikey%' AND lower(source_key_ref) NOT LIKE 'sk-%' AND
+	length(source_key_ref) - length(replace(source_key_ref, '.', '')) < 2 AND
+	length(usage_group_ref) BETWEEN 1 AND 31 AND
+	usage_group_ref NOT GLOB '*[^A-Za-z0-9._:-]*' AND
+	lower(usage_group_ref) NOT LIKE '%authorization%' AND lower(usage_group_ref) NOT LIKE '%bearer%' AND
+	lower(usage_group_ref) NOT LIKE '%token%' AND lower(usage_group_ref) NOT LIKE '%secret%' AND
+	lower(usage_group_ref) NOT LIKE '%master%' AND lower(usage_group_ref) NOT LIKE '%api_key%' AND
+	lower(usage_group_ref) NOT LIKE '%apikey%' AND lower(usage_group_ref) NOT LIKE 'sk-%' AND
+	length(usage_group_ref) - length(replace(usage_group_ref, '.', '')) < 2`
 
 // safeSourceReference is the catalog's trust boundary for key-adjacent source
 // values. Snapshot producers must supply a short, non-secret entity reference

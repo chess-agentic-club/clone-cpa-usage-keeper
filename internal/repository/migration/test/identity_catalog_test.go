@@ -13,6 +13,7 @@ import (
 const identityCatalogMigrationVersion = "20260908_create_identity_catalog"
 const identityCatalogHardeningMigrationVersion = "20260908_harden_identity_catalog"
 const identityCatalogInvariantMigrationVersion = "20260908_enforce_identity_catalog_invariants"
+const identityCatalogPurgeMigrationVersion = "20260908_purge_unsafe_identity_catalog_references"
 
 func TestIdentityCatalogMigrationCreatesSchemaWithForeignKeys(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "legacy.db")+"?_foreign_keys=on"), &gorm.Config{})
@@ -72,6 +73,7 @@ func TestIdentityCatalogInvariantMigrationRejectsLegacyParentSourceChanges(t *te
 		`CREATE TABLE identity_source_links (id TEXT PRIMARY KEY, external_identity_id TEXT NOT NULL, source_system TEXT NOT NULL, source_user_id TEXT NOT NULL, match_method TEXT NOT NULL)`,
 		`INSERT INTO source_users (id, source_system, source_user_ref) VALUES ('user-a', 'litellm', 'user-ref')`,
 		`INSERT INTO source_api_keys (id, source_system, source_key_ref, source_user_id, usage_group_ref) VALUES ('key-a', 'litellm', 'key-ref', 'user-a', 'group-ref')`,
+		`INSERT INTO source_api_keys (id, source_system, source_key_ref, source_user_id, usage_group_ref) VALUES ('unsafe-key', 'litellm', 'sk-live-example-credential', 'user-a', 'group-ref')`,
 		`INSERT INTO identity_source_links (id, external_identity_id, source_system, source_user_id, match_method) VALUES ('link-a', 'identity-a', 'litellm', 'user-a', 'manual')`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
@@ -83,6 +85,9 @@ func TestIdentityCatalogInvariantMigrationRejectsLegacyParentSourceChanges(t *te
 	}
 	if err := db.Table("schema_migrations").Where("version = ?", identityCatalogInvariantMigrationVersion).Delete(nil).Error; err != nil {
 		t.Fatalf("make invariant migration pending: %v", err)
+	}
+	if err := db.Table("schema_migrations").Where("version = ?", identityCatalogPurgeMigrationVersion).Delete(nil).Error; err != nil {
+		t.Fatalf("make purge migration pending: %v", err)
 	}
 	if err := migration.Run(db); err != nil {
 		t.Fatalf("run invariant migration: %v", err)
@@ -96,6 +101,13 @@ func TestIdentityCatalogInvariantMigrationRejectsLegacyParentSourceChanges(t *te
 	}
 	if sourceSystem != "litellm" {
 		t.Fatalf("failed parent update must preserve source scope, got %q", sourceSystem)
+	}
+	var keyCount int64
+	if err := db.Table("source_api_keys").Count(&keyCount).Error; err != nil {
+		t.Fatalf("count purged legacy source API keys: %v", err)
+	}
+	if keyCount != 1 {
+		t.Fatalf("expected unsafe legacy source API key to be removed, got %d rows", keyCount)
 	}
 	if err := db.Exec(`INSERT INTO source_api_keys (id, source_system, source_key_ref, source_user_id, usage_group_ref) VALUES ('key-b', 'litellm', 'key-ref', 'user-a', 'sk-live-example-credential')`).Error; err == nil {
 		t.Fatal("expected legacy direct SQL write with credential-shaped usage group to fail")
