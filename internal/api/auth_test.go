@@ -103,6 +103,23 @@ func TestAuthSessionReportsAuthenticatedWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestViewerScopeFromSessionReturnsCanonicalPrincipal(t *testing.T) {
+	session := auth.Session{
+		Role:               auth.RoleAPIKeyViewer,
+		ViewerSourceSystem: "litellm",
+		ViewerAPIGroupKey:  "litellm:token-a",
+		ViewerDisplayName:  "Token A",
+	}
+
+	principal, ok := ViewerScopeFromSession(session)
+	if !ok {
+		t.Fatal("expected principal-only viewer session to expose a scope")
+	}
+	if principal.SourceSystem != "litellm" || principal.APIGroupKey != "litellm:token-a" || principal.DisplayName != "Token A" {
+		t.Fatalf("unexpected viewer scope: %+v", principal)
+	}
+}
+
 func TestAuthProtectedRouteRequiresSessionWhenEnabled(t *testing.T) {
 	sessions := auth.NewSessionManager(time.Hour)
 	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}

@@ -2,7 +2,6 @@ package api
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -171,7 +170,7 @@ type usageOverviewCacheLevelPoint struct {
 
 func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsageProvider) {
 	router.GET("/key-overview", func(c *gin.Context) {
-		session, _, ok := activeAPIKeyViewerContext(c)
+		principal, session, ok := viewerScopeFromContext(c)
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
@@ -181,11 +180,11 @@ func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsagePro
 			writeUsageFilterParseError(c, err)
 			return
 		}
-		filter.APIKeyID = fmt.Sprintf("%d", session.CPAAPIKeyID)
+		applyViewerScope(&filter, principal, session)
 		writeUsageOverviewResponse(c, usageProvider, filter)
 	})
 	router.GET("/key-overview/realtime", func(c *gin.Context) {
-		session, _, ok := activeAPIKeyViewerContext(c)
+		principal, session, ok := viewerScopeFromContext(c)
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
@@ -195,7 +194,7 @@ func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsagePro
 			writeUsageFilterParseError(c, err)
 			return
 		}
-		filter.APIKeyID = fmt.Sprintf("%d", session.CPAAPIKeyID)
+		applyViewerScope(&filter, principal, session)
 		writeKeyUsageOverviewRealtimeResponse(c, usageProvider, filter)
 	})
 }

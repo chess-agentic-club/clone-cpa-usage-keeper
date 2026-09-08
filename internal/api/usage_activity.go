@@ -129,7 +129,7 @@ func registerUsageActivityRoute(router gin.IRoutes, usageProvider service.UsageP
 
 func registerKeyActivityRoute(router gin.IRoutes, usageProvider service.UsageProvider) {
 	router.GET("/key-activity", func(c *gin.Context) {
-		session, _, ok := activeAPIKeyViewerContext(c)
+		principal, session, ok := viewerScopeFromContext(c)
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
@@ -140,7 +140,7 @@ func registerKeyActivityRoute(router gin.IRoutes, usageProvider service.UsagePro
 			writeUsageFilterParseError(c, err)
 			return
 		}
-		filter.APIKeyID = fmt.Sprintf("%d", session.CPAAPIKeyID)
+		applyViewerScope(&filter, principal, session)
 		writeUsageActivityResponse(c, usageProvider, filter)
 	})
 }

@@ -302,6 +302,35 @@ func TestUsageServiceResolvesExternalAPIKeyFilterID(t *testing.T) {
 	}
 }
 
+func TestUsageServiceViewerAPIGroupKeyOverridesTamperedAPIKeyID(t *testing.T) {
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-service-viewer-scope.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	now := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{
+		{EventKey: "viewer-target", APIGroupKey: "litellm:token-a", Model: "gpt-5", Timestamp: now, TotalTokens: 11},
+		{EventKey: "viewer-other", APIGroupKey: "litellm:token-b", Model: "gpt-5", Timestamp: now, TotalTokens: 99},
+	}); err != nil {
+		t.Fatalf("InsertUsageEvents returned error: %v", err)
+	}
+	provider := NewUsageService(db, emptyPricingCatalogForTest())
+	events, err := provider.ListUsageEvents(context.Background(), servicedto.UsageFilter{
+		APIGroupKey: "litellm:token-a",
+		APIKeyID:    "not-an-id",
+		Page:        1,
+		PageSize:    100,
+		Limit:       100,
+	})
+	if err != nil {
+		t.Fatalf("ListUsageEvents returned error: %v", err)
+	}
+	if events.TotalCount != 1 || len(events.Events) != 1 || events.Events[0].APIGroupKey != "litellm:token-a" {
+		t.Fatalf("expected canonical viewer scope to win over API key ID, got %+v", events)
+	}
+}
+
 func TestUsageServiceRejectsInvalidAPIKeyID(t *testing.T) {
 	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-service-invalid-api-key-id.db")})
 	if err != nil {

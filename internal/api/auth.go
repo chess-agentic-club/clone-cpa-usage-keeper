@@ -12,6 +12,7 @@ import (
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/service"
+	servicedto "cpa-usage-keeper/internal/service/dto"
 	"github.com/gin-gonic/gin"
 )
 
@@ -204,6 +205,38 @@ func (h *authHandler) activeAPIKeyViewerMiddleware() gin.HandlerFunc {
 		// Their source-specific usage scope is applied in Task 5, so they must
 		// not be forced through the legacy CPA API-key lookup here.
 		if session.CPAAPIKeyID == 0 {
+			principal, principalOK := ViewerScopeFromSession(session)
+			if !principalOK {
+				h.deleteSession(resolved.Token)
+				clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+				return
+			}
+			if principal.SourceSystem == service.CLIProxyViewerSourceSystem {
+				idValue := strings.TrimPrefix(principal.APIGroupKey, service.CLIProxyViewerSourceSystem+":")
+				id, err := strconv.ParseInt(idValue, 10, 64)
+				if !strings.HasPrefix(principal.APIGroupKey, service.CLIProxyViewerSourceSystem+":") || err != nil || id <= 0 || h.legacyCPAAPIKeyProvider == nil {
+					h.deleteSession(resolved.Token)
+					clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+					return
+				}
+				row, err := h.legacyCPAAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), id)
+				if err != nil {
+					h.deleteSession(resolved.Token)
+					clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+					return
+				}
+				session.ViewerAPIGroupKey = row.APIKey
+				if strings.TrimSpace(session.ViewerAPIGroupKey) == "" {
+					session.ViewerAPIGroupKey = service.CLIProxyViewerSourceSystem + ":" + strconv.FormatInt(row.ID, 10)
+				}
+				if strings.TrimSpace(session.ViewerDisplayName) == "" {
+					session.ViewerDisplayName = helper.CPAAPIKeyDisplayName(row)
+				}
+				c.Set(authSessionContextKey, session)
+			}
 			c.Next()
 			return
 		}
@@ -212,8 +245,69 @@ func (h *authHandler) activeAPIKeyViewerMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
+		// Normalize legacy CPA sessions into the same trusted principal shape as
+		// source-scoped sessions. The canonical analytics key comes from the
+		// active server-side CPA row, never from request query parameters.
+		session.ViewerSourceSystem = service.CLIProxyViewerSourceSystem
+		session.ViewerAPIGroupKey = row.APIKey
+		if strings.TrimSpace(session.ViewerAPIGroupKey) == "" {
+			session.ViewerAPIGroupKey = service.CLIProxyViewerSourceSystem + ":" + strconv.FormatInt(row.ID, 10)
+		}
+		session.ViewerDisplayName = helper.CPAAPIKeyDisplayName(row)
+		c.Set(authSessionContextKey, session)
 		c.Set(activeViewerKeyContextKey, row)
 		c.Next()
+	}
+}
+
+// ViewerScopeFromSession returns the trusted, non-secret principal persisted
+// in a viewer session. Legacy CPA sessions are enriched by the viewer
+// middleware before dashboard handlers consume this helper.
+func ViewerScopeFromSession(session auth.Session) (auth.ViewerPrincipal, bool) {
+	if session.Role != auth.RoleAPIKeyViewer {
+		return auth.ViewerPrincipal{}, false
+	}
+	principal, err := auth.NormalizeViewerPrincipal(auth.ViewerPrincipal{
+		SourceSystem: session.ViewerSourceSystem,
+		APIGroupKey:  session.ViewerAPIGroupKey,
+		DisplayName:  session.ViewerDisplayName,
+	})
+	if err != nil {
+		return auth.ViewerPrincipal{}, false
+	}
+	return principal, true
+}
+
+func viewerScopeFromContext(c *gin.Context) (auth.ViewerPrincipal, auth.Session, bool) {
+	if c == nil {
+		return auth.ViewerPrincipal{}, auth.Session{}, false
+	}
+	sessionValue, ok := c.Get(authSessionContextKey)
+	if !ok {
+		return auth.ViewerPrincipal{}, auth.Session{}, false
+	}
+	session, ok := sessionValue.(auth.Session)
+	if !ok {
+		return auth.ViewerPrincipal{}, auth.Session{}, false
+	}
+	principal, ok := ViewerScopeFromSession(session)
+	if !ok {
+		return auth.ViewerPrincipal{}, auth.Session{}, false
+	}
+	return principal, session, true
+}
+
+func applyViewerScope(filter *servicedto.UsageFilter, principal auth.ViewerPrincipal, session auth.Session) {
+	if filter == nil {
+		return
+	}
+	filter.APIGroupKey = principal.APIGroupKey
+	// Preserve the legacy internal identifier for compatibility with response
+	// labels; the service always gives APIGroupKey precedence over this field.
+	if session.CPAAPIKeyID > 0 {
+		filter.APIKeyID = strconv.FormatInt(session.CPAAPIKeyID, 10)
+	} else {
+		filter.APIKeyID = ""
 	}
 }
 

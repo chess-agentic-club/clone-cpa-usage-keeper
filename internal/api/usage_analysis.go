@@ -200,7 +200,7 @@ func registerUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageP
 
 func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageProvider) {
 	router.GET("/key-analysis", func(c *gin.Context) {
-		session, apiKey, ok := activeAPIKeyViewerContext(c)
+		principal, session, ok := viewerScopeFromContext(c)
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
@@ -215,14 +215,17 @@ func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.Usa
 			return
 		}
 		// Viewer 的数据范围只由 session 决定，客户端 api_key_id 不参与解析或过滤。
-		filter.APIKeyID = strconv.FormatInt(session.CPAAPIKeyID, 10)
+		applyViewerScope(&filter, principal, session)
 		analysis, err := usageProvider.GetAnalysis(c.Request.Context(), filter)
 		if err != nil {
 			writeInternalError(c, "get key analysis failed", err)
 			return
 		}
 		apiKeyInfos := map[string]analysisAPIKeyInfo{
-			apiKey.APIKey: {ID: strconv.FormatInt(apiKey.ID, 10), Label: helper.CPAAPIKeyDisplayName(apiKey)},
+			principal.APIGroupKey: {ID: principal.APIGroupKey, Label: principal.DisplayName},
+		}
+		if _, apiKey, legacy := activeAPIKeyViewerContext(c); legacy {
+			apiKeyInfos[apiKey.APIKey] = analysisAPIKeyInfo{ID: strconv.FormatInt(apiKey.ID, 10), Label: helper.CPAAPIKeyDisplayName(apiKey)}
 		}
 		payload := buildAnalysisPayload(analysis, apiKeyInfos)
 		// 来源身份属于管理员视图；Viewer JSON 在服务端直接清空，避免仅靠 UI 隐藏。
@@ -232,7 +235,7 @@ func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.Usa
 	})
 
 	router.GET("/key-analysis/latency", func(c *gin.Context) {
-		session, _, ok := activeAPIKeyViewerContext(c)
+		principal, session, ok := viewerScopeFromContext(c)
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
@@ -246,7 +249,7 @@ func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.Usa
 			writeUsageFilterParseError(c, err)
 			return
 		}
-		filter.APIKeyID = strconv.FormatInt(session.CPAAPIKeyID, 10)
+		applyViewerScope(&filter, principal, session)
 		latency, err := usageProvider.GetAnalysisLatency(c.Request.Context(), filter)
 		if err != nil {
 			writeInternalError(c, "get key analysis latency failed", err)

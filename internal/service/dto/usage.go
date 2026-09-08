@@ -37,8 +37,11 @@ type UsageFilter struct {
 	Source          string
 	AuthIndex       string
 	AuthType        string
-	APIKeyID        string
-	Result          string
+	// APIGroupKey is a trusted, server-resolved viewer scope. When present it
+	// takes precedence over the user-controlled APIKeyID filter.
+	APIGroupKey string
+	APIKeyID    string
+	Result      string
 }
 
 // UsageEventsPage 是 usage events 列表的服务层结果。

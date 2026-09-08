@@ -152,6 +152,13 @@ func buildAuthSessionItems(records []auth.SessionRecord, apiKeysByID map[int64]e
 		if record.Role != auth.RoleAPIKeyViewer {
 			continue
 		}
+		if strings.TrimSpace(record.ViewerDisplayName) != "" {
+			base.Kind = authSessionKindAPIKey
+			base.Label = record.ViewerDisplayName
+			base.DisplayKey = record.ViewerDisplayName
+			items = append(items, base)
+			continue
+		}
 		label, displayKey := apiKeySessionDisplay(record.CPAAPIKeyID, apiKeysByID)
 		base.Kind = authSessionKindAPIKey
 		base.APIKeyID = strconv.FormatInt(record.CPAAPIKeyID, 10)
