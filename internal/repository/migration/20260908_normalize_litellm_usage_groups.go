@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 
+	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/latency"
 	"gorm.io/gorm"
 )
 
@@ -114,22 +116,154 @@ func replaceLegacyLiteLLMUsageGroup(tx *gorm.DB, legacy, canonical string) error
 }
 
 func discardDuplicateLiteLLMRollups(tx *gorm.DB, legacy, canonical string) error {
-	queries := []string{
-		`UPDATE usage_overview_hourly_stats AS current_row SET request_count=request_count+(SELECT legacy_row.request_count FROM usage_overview_hourly_stats AS legacy_row WHERE legacy_row.api_group_key=? AND legacy_row.bucket_start=current_row.bucket_start AND legacy_row.model=current_row.model AND legacy_row.auth_index=current_row.auth_index AND legacy_row.model_alias=current_row.model_alias AND legacy_row.service_tier=current_row.service_tier AND legacy_row.response_service_tier=current_row.response_service_tier AND legacy_row.reasoning_effort=current_row.reasoning_effort AND legacy_row.endpoint=current_row.endpoint AND legacy_row.executor_type=current_row.executor_type), total_tokens=total_tokens+(SELECT legacy_row.total_tokens FROM usage_overview_hourly_stats AS legacy_row WHERE legacy_row.api_group_key=? AND legacy_row.bucket_start=current_row.bucket_start AND legacy_row.model=current_row.model AND legacy_row.auth_index=current_row.auth_index AND legacy_row.model_alias=current_row.model_alias AND legacy_row.service_tier=current_row.service_tier AND legacy_row.response_service_tier=current_row.response_service_tier AND legacy_row.reasoning_effort=current_row.reasoning_effort AND legacy_row.endpoint=current_row.endpoint AND legacy_row.executor_type=current_row.executor_type) WHERE current_row.api_group_key=?`,
-		`UPDATE usage_overview_daily_stats AS current_row SET request_count=request_count+(SELECT legacy_row.request_count FROM usage_overview_daily_stats AS legacy_row WHERE legacy_row.api_group_key=? AND legacy_row.bucket_start=current_row.bucket_start AND legacy_row.model=current_row.model AND legacy_row.auth_index=current_row.auth_index AND legacy_row.model_alias=current_row.model_alias AND legacy_row.service_tier=current_row.service_tier AND legacy_row.response_service_tier=current_row.response_service_tier AND legacy_row.reasoning_effort=current_row.reasoning_effort AND legacy_row.endpoint=current_row.endpoint AND legacy_row.executor_type=current_row.executor_type), total_tokens=total_tokens+(SELECT legacy_row.total_tokens FROM usage_overview_daily_stats AS legacy_row WHERE legacy_row.api_group_key=? AND legacy_row.bucket_start=current_row.bucket_start AND legacy_row.model=current_row.model AND legacy_row.auth_index=current_row.auth_index AND legacy_row.model_alias=current_row.model_alias AND legacy_row.service_tier=current_row.service_tier AND legacy_row.response_service_tier=current_row.response_service_tier AND legacy_row.reasoning_effort=current_row.reasoning_effort AND legacy_row.endpoint=current_row.endpoint AND legacy_row.executor_type=current_row.executor_type) WHERE current_row.api_group_key=?`,
-		`UPDATE usage_activity_stats AS current_row SET total_tokens=total_tokens+(SELECT legacy_row.total_tokens FROM usage_activity_stats AS legacy_row WHERE legacy_row.api_group_key=? AND legacy_row.grain=current_row.grain AND legacy_row.bucket_start=current_row.bucket_start) WHERE current_row.api_group_key=?`,
-		`DELETE FROM usage_overview_hourly_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_overview_hourly_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.bucket_start = legacy_row.bucket_start AND current_row.model = legacy_row.model AND current_row.auth_index = legacy_row.auth_index AND current_row.model_alias = legacy_row.model_alias AND current_row.service_tier = legacy_row.service_tier AND current_row.response_service_tier = legacy_row.response_service_tier AND current_row.reasoning_effort = legacy_row.reasoning_effort AND current_row.endpoint = legacy_row.endpoint AND current_row.executor_type = legacy_row.executor_type)`,
-		`DELETE FROM usage_overview_daily_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_overview_daily_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.bucket_start = legacy_row.bucket_start AND current_row.model = legacy_row.model AND current_row.auth_index = legacy_row.auth_index AND current_row.model_alias = legacy_row.model_alias AND current_row.service_tier = legacy_row.service_tier AND current_row.response_service_tier = legacy_row.response_service_tier AND current_row.reasoning_effort = legacy_row.reasoning_effort AND current_row.endpoint = legacy_row.endpoint AND current_row.executor_type = legacy_row.executor_type)`,
-		`DELETE FROM usage_activity_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_activity_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.grain = legacy_row.grain AND current_row.bucket_start = legacy_row.bucket_start)`,
-		`DELETE FROM usage_latency_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_latency_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.bucket_type = legacy_row.bucket_type AND current_row.bucket_start = legacy_row.bucket_start)`,
+	if err := mergeOverviewHourly(tx, legacy, canonical); err != nil {
+		return err
 	}
-	for index, query := range queries {
-		args := []any{legacy, canonical}
-		if index < 2 {
-			args = []any{legacy, legacy, canonical}
+	if err := mergeOverviewDaily(tx, legacy, canonical); err != nil {
+		return err
+	}
+	if err := mergeActivity(tx, legacy, canonical); err != nil {
+		return err
+	}
+	return mergeLatency(tx, legacy, canonical)
+}
+
+func mergeOverviewHourly(tx *gorm.DB, legacy, canonical string) error {
+	var rows []entities.UsageOverviewHourlyStat
+	if err := tx.Where("api_group_key = ?", legacy).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var target entities.UsageOverviewHourlyStat
+		err := tx.Where("api_group_key = ? AND model = ? AND auth_index = ? AND model_alias = ? AND service_tier = ? AND response_service_tier = ? AND reasoning_effort = ? AND endpoint = ? AND executor_type = ?", canonical, row.Model, row.AuthIndex, row.ModelAlias, row.ServiceTier, row.ResponseServiceTier, row.ReasoningEffort, row.Endpoint, row.ExecutorType).First(&target).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
 		}
-		if err := tx.Exec(query, args...).Error; err != nil {
-			return fmt.Errorf("reconcile duplicate LiteLLM rollup: %w", err)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&target).Updates(map[string]any{"request_count": target.RequestCount + row.RequestCount, "success_count": target.SuccessCount + row.SuccessCount, "failure_count": target.FailureCount + row.FailureCount, "input_tokens": target.InputTokens + row.InputTokens, "output_tokens": target.OutputTokens + row.OutputTokens, "reasoning_tokens": target.ReasoningTokens + row.ReasoningTokens, "cached_tokens": target.CachedTokens + row.CachedTokens, "cache_read_tokens": target.CacheReadTokens + row.CacheReadTokens, "cache_creation_tokens": target.CacheCreationTokens + row.CacheCreationTokens, "total_tokens": target.TotalTokens + row.TotalTokens, "provider_cost_usd": target.ProviderCostUSD + row.ProviderCostUSD, "provider_cost_count": target.ProviderCostCount + row.ProviderCostCount}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mergeOverviewDaily(tx *gorm.DB, legacy, canonical string) error {
+	var rows []entities.UsageOverviewDailyStat
+	if err := tx.Where("api_group_key = ?", legacy).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var target entities.UsageOverviewDailyStat
+		err := tx.Where("api_group_key = ? AND model = ? AND auth_index = ? AND model_alias = ? AND service_tier = ? AND response_service_tier = ? AND reasoning_effort = ? AND endpoint = ? AND executor_type = ?", canonical, row.Model, row.AuthIndex, row.ModelAlias, row.ServiceTier, row.ResponseServiceTier, row.ReasoningEffort, row.Endpoint, row.ExecutorType).First(&target).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&target).Updates(map[string]any{"request_count": target.RequestCount + row.RequestCount, "success_count": target.SuccessCount + row.SuccessCount, "failure_count": target.FailureCount + row.FailureCount, "input_tokens": target.InputTokens + row.InputTokens, "output_tokens": target.OutputTokens + row.OutputTokens, "reasoning_tokens": target.ReasoningTokens + row.ReasoningTokens, "cached_tokens": target.CachedTokens + row.CachedTokens, "cache_read_tokens": target.CacheReadTokens + row.CacheReadTokens, "cache_creation_tokens": target.CacheCreationTokens + row.CacheCreationTokens, "total_tokens": target.TotalTokens + row.TotalTokens, "provider_cost_usd": target.ProviderCostUSD + row.ProviderCostUSD, "provider_cost_count": target.ProviderCostCount + row.ProviderCostCount}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mergeActivity(tx *gorm.DB, legacy, canonical string) error {
+	var rows []entities.UsageActivityStat
+	if err := tx.Where("api_group_key = ?", legacy).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var target entities.UsageActivityStat
+		err := tx.Where("grain = ? AND api_group_key = ?", row.Grain, canonical).First(&target).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&target).Updates(map[string]any{"success_count": target.SuccessCount + row.SuccessCount, "failure_count": target.FailureCount + row.FailureCount, "input_tokens": target.InputTokens + row.InputTokens, "output_tokens": target.OutputTokens + row.OutputTokens, "reasoning_tokens": target.ReasoningTokens + row.ReasoningTokens, "cache_read_tokens": target.CacheReadTokens + row.CacheReadTokens, "cache_creation_tokens": target.CacheCreationTokens + row.CacheCreationTokens, "total_tokens": target.TotalTokens + row.TotalTokens}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mergeLatency(tx *gorm.DB, legacy, canonical string) error {
+	var rows []entities.UsageLatencyStat
+	if err := tx.Where("api_group_key = ?", legacy).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var target entities.UsageLatencyStat
+		err := tx.Where("bucket_type = ? AND api_group_key = ?", row.BucketType, canonical).First(&target).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		a, e := latency.UnmarshalSketch(target.TTFTSketch)
+		if e != nil {
+			return e
+		}
+		b, e := latency.UnmarshalSketch(row.TTFTSketch)
+		if e != nil {
+			return e
+		}
+		if e = a.Merge(b); e != nil {
+			return e
+		}
+		c, e := latency.UnmarshalSketch(target.LatencySketch)
+		if e != nil {
+			return e
+		}
+		d, e := latency.UnmarshalSketch(row.LatencySketch)
+		if e != nil {
+			return e
+		}
+		if e = c.Merge(d); e != nil {
+			return e
+		}
+		s, e := latency.UnmarshalSampleSet(target.SamplePoints)
+		if e != nil {
+			return e
+		}
+		o, e := latency.UnmarshalSampleSet(row.SamplePoints)
+		if e != nil {
+			return e
+		}
+		if e = s.Merge(o); e != nil {
+			return e
+		}
+		ab, e := a.MarshalBinary()
+		if e != nil {
+			return e
+		}
+		cb, e := c.MarshalBinary()
+		if e != nil {
+			return e
+		}
+		sb, e := s.MarshalBinary()
+		if e != nil {
+			return e
+		}
+		if err := tx.Model(&target).Updates(map[string]any{"sample_count": target.SampleCount + row.SampleCount, "max_ttft_ms": max(target.MaxTTFTMS, row.MaxTTFTMS), "max_latency_ms": max(target.MaxLatencyMS, row.MaxLatencyMS), "ttft_sketch": ab, "latency_sketch": cb, "sample_points": sb}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&row).Error; err != nil {
+			return err
 		}
 	}
 	return nil
