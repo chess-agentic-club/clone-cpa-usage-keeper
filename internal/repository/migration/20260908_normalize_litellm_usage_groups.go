@@ -10,6 +10,8 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/latency"
+	"cpa-usage-keeper/internal/repository/latencystore"
+	"cpa-usage-keeper/internal/timeutil"
 	"gorm.io/gorm"
 )
 
@@ -116,6 +118,11 @@ func replaceLegacyLiteLLMUsageGroup(tx *gorm.DB, legacy, canonical string) error
 }
 
 func discardDuplicateLiteLLMRollups(tx *gorm.DB, legacy, canonical string) error {
+	// Validate every latency row before any rollup mutation. The migration
+	// runner supplies the transaction that rolls back all later writes.
+	if err := mergeLatency(tx, legacy, canonical); err != nil {
+		return err
+	}
 	if err := mergeOverviewHourly(tx, legacy, canonical); err != nil {
 		return err
 	}
@@ -125,7 +132,7 @@ func discardDuplicateLiteLLMRollups(tx *gorm.DB, legacy, canonical string) error
 	if err := mergeActivity(tx, legacy, canonical); err != nil {
 		return err
 	}
-	return mergeLatency(tx, legacy, canonical)
+	return nil
 }
 
 func mergeOverviewHourly(tx *gorm.DB, legacy, canonical string) error {
@@ -135,12 +142,12 @@ func mergeOverviewHourly(tx *gorm.DB, legacy, canonical string) error {
 	}
 	for _, row := range rows {
 		var target entities.UsageOverviewHourlyStat
-		err := tx.Where("api_group_key = ? AND model = ? AND auth_index = ? AND model_alias = ? AND service_tier = ? AND response_service_tier = ? AND reasoning_effort = ? AND endpoint = ? AND executor_type = ?", canonical, row.Model, row.AuthIndex, row.ModelAlias, row.ServiceTier, row.ResponseServiceTier, row.ReasoningEffort, row.Endpoint, row.ExecutorType).First(&target).Error
-		if err == gorm.ErrRecordNotFound {
-			continue
+		result := tx.Where("bucket_start = ? AND api_group_key = ? AND model = ? AND auth_index = ? AND model_alias = ? AND service_tier = ? AND response_service_tier = ? AND reasoning_effort = ? AND endpoint = ? AND executor_type = ?", timeutil.FormatStorageTime(row.BucketStart), canonical, row.Model, row.AuthIndex, row.ModelAlias, row.ServiceTier, row.ResponseServiceTier, row.ReasoningEffort, row.Endpoint, row.ExecutorType).Limit(1).Find(&target)
+		if result.Error != nil {
+			return result.Error
 		}
-		if err != nil {
-			return err
+		if result.RowsAffected == 0 {
+			continue
 		}
 		if err := tx.Model(&target).Updates(map[string]any{"request_count": target.RequestCount + row.RequestCount, "success_count": target.SuccessCount + row.SuccessCount, "failure_count": target.FailureCount + row.FailureCount, "input_tokens": target.InputTokens + row.InputTokens, "output_tokens": target.OutputTokens + row.OutputTokens, "reasoning_tokens": target.ReasoningTokens + row.ReasoningTokens, "cached_tokens": target.CachedTokens + row.CachedTokens, "cache_read_tokens": target.CacheReadTokens + row.CacheReadTokens, "cache_creation_tokens": target.CacheCreationTokens + row.CacheCreationTokens, "total_tokens": target.TotalTokens + row.TotalTokens, "provider_cost_usd": target.ProviderCostUSD + row.ProviderCostUSD, "provider_cost_count": target.ProviderCostCount + row.ProviderCostCount}).Error; err != nil {
 			return err
@@ -159,12 +166,12 @@ func mergeOverviewDaily(tx *gorm.DB, legacy, canonical string) error {
 	}
 	for _, row := range rows {
 		var target entities.UsageOverviewDailyStat
-		err := tx.Where("api_group_key = ? AND model = ? AND auth_index = ? AND model_alias = ? AND service_tier = ? AND response_service_tier = ? AND reasoning_effort = ? AND endpoint = ? AND executor_type = ?", canonical, row.Model, row.AuthIndex, row.ModelAlias, row.ServiceTier, row.ResponseServiceTier, row.ReasoningEffort, row.Endpoint, row.ExecutorType).First(&target).Error
-		if err == gorm.ErrRecordNotFound {
-			continue
+		result := tx.Where("bucket_start = ? AND api_group_key = ? AND model = ? AND auth_index = ? AND model_alias = ? AND service_tier = ? AND response_service_tier = ? AND reasoning_effort = ? AND endpoint = ? AND executor_type = ?", timeutil.FormatStorageTime(row.BucketStart), canonical, row.Model, row.AuthIndex, row.ModelAlias, row.ServiceTier, row.ResponseServiceTier, row.ReasoningEffort, row.Endpoint, row.ExecutorType).Limit(1).Find(&target)
+		if result.Error != nil {
+			return result.Error
 		}
-		if err != nil {
-			return err
+		if result.RowsAffected == 0 {
+			continue
 		}
 		if err := tx.Model(&target).Updates(map[string]any{"request_count": target.RequestCount + row.RequestCount, "success_count": target.SuccessCount + row.SuccessCount, "failure_count": target.FailureCount + row.FailureCount, "input_tokens": target.InputTokens + row.InputTokens, "output_tokens": target.OutputTokens + row.OutputTokens, "reasoning_tokens": target.ReasoningTokens + row.ReasoningTokens, "cached_tokens": target.CachedTokens + row.CachedTokens, "cache_read_tokens": target.CacheReadTokens + row.CacheReadTokens, "cache_creation_tokens": target.CacheCreationTokens + row.CacheCreationTokens, "total_tokens": target.TotalTokens + row.TotalTokens, "provider_cost_usd": target.ProviderCostUSD + row.ProviderCostUSD, "provider_cost_count": target.ProviderCostCount + row.ProviderCostCount}).Error; err != nil {
 			return err
@@ -183,12 +190,12 @@ func mergeActivity(tx *gorm.DB, legacy, canonical string) error {
 	}
 	for _, row := range rows {
 		var target entities.UsageActivityStat
-		err := tx.Where("grain = ? AND api_group_key = ?", row.Grain, canonical).First(&target).Error
-		if err == gorm.ErrRecordNotFound {
-			continue
+		result := tx.Where("grain = ? AND bucket_start = ? AND api_group_key = ?", row.Grain, timeutil.FormatSortableStorageTime(row.BucketStart), canonical).Limit(1).Find(&target)
+		if result.Error != nil {
+			return result.Error
 		}
-		if err != nil {
-			return err
+		if result.RowsAffected == 0 {
+			continue
 		}
 		if err := tx.Model(&target).Updates(map[string]any{"success_count": target.SuccessCount + row.SuccessCount, "failure_count": target.FailureCount + row.FailureCount, "input_tokens": target.InputTokens + row.InputTokens, "output_tokens": target.OutputTokens + row.OutputTokens, "reasoning_tokens": target.ReasoningTokens + row.ReasoningTokens, "cache_read_tokens": target.CacheReadTokens + row.CacheReadTokens, "cache_creation_tokens": target.CacheCreationTokens + row.CacheCreationTokens, "total_tokens": target.TotalTokens + row.TotalTokens}).Error; err != nil {
 			return err
@@ -205,64 +212,50 @@ func mergeLatency(tx *gorm.DB, legacy, canonical string) error {
 	if err := tx.Where("api_group_key = ?", legacy).Find(&rows).Error; err != nil {
 		return err
 	}
+	type mergePlan struct {
+		legacy entities.UsageLatencyStat
+		target entities.UsageLatencyStat
+	}
+	plans := make([]mergePlan, 0, len(rows))
 	for _, row := range rows {
 		var target entities.UsageLatencyStat
-		err := tx.Where("bucket_type = ? AND api_group_key = ?", row.BucketType, canonical).First(&target).Error
-		if err == gorm.ErrRecordNotFound {
+		result := tx.Where("bucket_type = ? AND bucket_start = ? AND api_group_key = ?", row.BucketType, timeutil.FormatStorageTime(row.BucketStart), canonical).Limit(1).Find(&target)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			if _, err := latencystore.MergeDiagnosticsRows([]entities.UsageLatencyStat{row}); err != nil {
+				return fmt.Errorf("validate legacy LiteLLM latency rollup: %w", err)
+			}
 			continue
 		}
+		aggregate, err := latencystore.MergeDiagnosticsRows([]entities.UsageLatencyStat{target, row})
 		if err != nil {
+			return fmt.Errorf("merge legacy LiteLLM latency rollup: %w", err)
+		}
+		target.SampleCount = aggregate.SampleCount
+		target.MaxTTFTMS = aggregate.MaxTTFTMS
+		target.MaxLatencyMS = aggregate.MaxLatencyMS
+		target.FormatVersion = latency.FormatVersion
+		target.TTFTSketch, err = aggregate.TTFTSketch.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("encode merged LiteLLM TTFT sketch: %w", err)
+		}
+		target.LatencySketch, err = aggregate.LatencySketch.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("encode merged LiteLLM latency sketch: %w", err)
+		}
+		target.SamplePoints, err = aggregate.SamplePoints.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("encode merged LiteLLM latency samples: %w", err)
+		}
+		plans = append(plans, mergePlan{legacy: row, target: target})
+	}
+	for _, plan := range plans {
+		if err := tx.Model(&plan.target).Updates(map[string]any{"sample_count": plan.target.SampleCount, "max_ttft_ms": plan.target.MaxTTFTMS, "max_latency_ms": plan.target.MaxLatencyMS, "format_version": plan.target.FormatVersion, "ttft_sketch": plan.target.TTFTSketch, "latency_sketch": plan.target.LatencySketch, "sample_points": plan.target.SamplePoints}).Error; err != nil {
 			return err
 		}
-		a, e := latency.UnmarshalSketch(target.TTFTSketch)
-		if e != nil {
-			return e
-		}
-		b, e := latency.UnmarshalSketch(row.TTFTSketch)
-		if e != nil {
-			return e
-		}
-		if e = a.Merge(b); e != nil {
-			return e
-		}
-		c, e := latency.UnmarshalSketch(target.LatencySketch)
-		if e != nil {
-			return e
-		}
-		d, e := latency.UnmarshalSketch(row.LatencySketch)
-		if e != nil {
-			return e
-		}
-		if e = c.Merge(d); e != nil {
-			return e
-		}
-		s, e := latency.UnmarshalSampleSet(target.SamplePoints)
-		if e != nil {
-			return e
-		}
-		o, e := latency.UnmarshalSampleSet(row.SamplePoints)
-		if e != nil {
-			return e
-		}
-		if e = s.Merge(o); e != nil {
-			return e
-		}
-		ab, e := a.MarshalBinary()
-		if e != nil {
-			return e
-		}
-		cb, e := c.MarshalBinary()
-		if e != nil {
-			return e
-		}
-		sb, e := s.MarshalBinary()
-		if e != nil {
-			return e
-		}
-		if err := tx.Model(&target).Updates(map[string]any{"sample_count": target.SampleCount + row.SampleCount, "max_ttft_ms": max(target.MaxTTFTMS, row.MaxTTFTMS), "max_latency_ms": max(target.MaxLatencyMS, row.MaxLatencyMS), "ttft_sketch": ab, "latency_sketch": cb, "sample_points": sb}).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&row).Error; err != nil {
+		if err := tx.Delete(&plan.legacy).Error; err != nil {
 			return err
 		}
 	}
