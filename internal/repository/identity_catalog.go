@@ -359,7 +359,7 @@ func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSp
 // or group reference, never a credential, JWT, authorization value, or hash.
 func safeSourceReference(value string) (string, error) {
 	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 128 {
+	if value == "" || len(value) > 31 {
 		return "", fmt.Errorf("invalid source reference")
 	}
 	for _, char := range value {
@@ -373,7 +373,7 @@ func safeSourceReference(value string) (string, error) {
 			return "", fmt.Errorf("invalid source reference")
 		}
 	}
-	if strings.HasPrefix(lower, "sk-") || looksLikeJWT(value) || looksLikeHash(value) || looksLikeLongOpaqueValue(value) {
+	if strings.HasPrefix(lower, "sk-") || looksLikeJWT(value) || looksLikeHash(value) {
 		return "", fmt.Errorf("invalid source reference")
 	}
 	return value, nil
@@ -398,18 +398,6 @@ func looksLikeHash(value string) bool {
 	}
 	for _, char := range value {
 		if !((char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F') || (char >= '0' && char <= '9')) {
-			return false
-		}
-	}
-	return true
-}
-
-func looksLikeLongOpaqueValue(value string) bool {
-	if len(value) < 32 {
-		return false
-	}
-	for _, char := range value {
-		if char == ':' || char == '-' || char == '_' || char == '.' {
 			return false
 		}
 	}

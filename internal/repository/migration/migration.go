@@ -98,9 +98,10 @@ const (
 	migrationCreateUsageAPIKeyIdentities            = "20260906_create_usage_api_key_identities"
 	migrationAddProviderCostRollupFields            = "20260907_add_provider_cost_rollup_fields"
 	// migrationAddAuthSessionViewerPrincipal stores source-owned viewer identity without raw credentials.
-	migrationAddAuthSessionViewerPrincipal = "20260907_add_auth_session_viewer_principal"
-	migrationCreateIdentityCatalog         = "20260908_create_identity_catalog"
-	migrationHardenIdentityCatalog         = "20260908_harden_identity_catalog"
+	migrationAddAuthSessionViewerPrincipal    = "20260907_add_auth_session_viewer_principal"
+	migrationCreateIdentityCatalog            = "20260908_create_identity_catalog"
+	migrationHardenIdentityCatalog            = "20260908_harden_identity_catalog"
+	migrationEnforceIdentityCatalogInvariants = "20260908_enforce_identity_catalog_invariants"
 )
 
 type schemaMigration struct {
@@ -252,6 +253,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddAuthSessionViewerPrincipal, run: addAuthSessionViewerPrincipalMigration},
 		{version: migrationCreateIdentityCatalog, run: createIdentityCatalogMigration},
 		{version: migrationHardenIdentityCatalog, run: hardenIdentityCatalogMigration},
+		{version: migrationEnforceIdentityCatalogInvariants, run: enforceIdentityCatalogInvariantsMigration},
 	}
 }
 

@@ -140,6 +140,33 @@ func TestApplySourceSnapshotRejectsUnsafeKeyReferencesWithoutPersistingThem(t *t
 	}
 }
 
+func TestSourceAPIKeyDirectWritesRejectUnsafeReferencesAndActiveReadsStaySafe(t *testing.T) {
+	db := openTestDatabase(t)
+	catalog := NewCatalogRepository(db)
+	user := entities.SourceUser{ID: "source-user", SourceSystem: "litellm", SourceUserRef: "user-a", Active: true}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	unsafeReference := "sk-live-example-credential"
+	if err := db.Create(&entities.SourceAPIKey{ID: "unsafe-orm", SourceSystem: "litellm", SourceKeyRef: unsafeReference, SourceUserID: user.ID, UsageGroupRef: "group-a", Active: true}).Error; err == nil {
+		t.Fatal("expected direct ORM write with credential-shaped key reference to fail")
+	}
+	if err := db.Exec(`INSERT INTO source_api_keys (id, source_system, source_key_ref, source_user_id, usage_group_ref, active)
+		VALUES (?, ?, ?, ?, ?, ?)`, "unsafe-sql", "litellm", "key-b", user.ID, unsafeReference, true).Error; err == nil {
+		t.Fatal("expected direct SQL write with credential-shaped usage group reference to fail")
+	}
+	if err := db.Create(&entities.SourceAPIKey{ID: "safe-key", SourceSystem: "litellm", SourceKeyRef: "key-a", SourceUserID: user.ID, UsageGroupRef: "group-a", Active: true}).Error; err != nil {
+		t.Fatalf("create safe source API key: %v", err)
+	}
+	if err := db.Model(&entities.SourceAPIKey{}).Where("id = ?", "safe-key").Update("source_key_ref", unsafeReference).Error; err == nil {
+		t.Fatal("expected direct update with credential-shaped key reference to fail")
+	}
+	keys, err := catalog.ListActiveSourceAPIKeys(context.Background(), "litellm")
+	if err != nil || len(keys) != 1 || keys[0].ID != "safe-key" || keys[0].SourceKeyRef != "key-a" || keys[0].UsageGroupRef != "group-a" {
+		t.Fatalf("active reads must expose only safely stored references, got keys=%#v err=%v", keys, err)
+	}
+}
+
 func TestCatalogRepositoryEnforcesIdentityAndSourceCatalogConstraints(t *testing.T) {
 	db := openTestDatabase(t)
 	catalog := NewCatalogRepository(db)
