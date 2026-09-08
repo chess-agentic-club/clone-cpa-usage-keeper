@@ -87,7 +87,7 @@ func (verifier *JWTVerifier) Verify(ctx context.Context, raw string) (ExternalPr
 		return ExternalPrincipal{}, ErrInvalidIdentityAssertion
 	}
 
-	claims := jwt.MapClaims{}
+	claims := &embeddedClaims{}
 	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodRS256 {
 			return nil, ErrInvalidIdentityAssertion
@@ -107,36 +107,35 @@ func (verifier *JWTVerifier) Verify(ctx context.Context, raw string) (ExternalPr
 		jwt.WithAudience(verifier.config.Audience),
 		jwt.WithExpirationRequired(),
 		jwt.WithNotBeforeRequired(),
-		jwt.WithJSONNumber(),
 		jwt.WithStrictDecoding(),
 	)
 	if err != nil || token == nil || !token.Valid {
 		return ExternalPrincipal{}, ErrInvalidIdentityAssertion
 	}
 
-	subject, ok := requiredExactStringClaim(claims, "sub")
-	if !ok {
+	if claims.ExpiresAt == nil || !isExactNonBlankString(claims.Subject) {
 		return ExternalPrincipal{}, ErrInvalidIdentityAssertion
 	}
-	role, ok := requiredExactStringClaim(claims, verifier.config.RoleClaim)
+	role, ok := claims.requiredExactString(verifier.config.RoleClaim)
 	if !ok || (role != "user" && role != "admin") {
 		return ExternalPrincipal{}, ErrInvalidIdentityAssertion
 	}
-	email, ok := optionalStringClaim(claims, "email")
+	email, ok := claims.optionalString("email")
 	if !ok {
 		return ExternalPrincipal{}, ErrInvalidIdentityAssertion
 	}
-	displayName, ok := optionalStringClaim(claims, "name")
+	displayName, ok := claims.optionalString("name")
 	if !ok {
 		return ExternalPrincipal{}, ErrInvalidIdentityAssertion
 	}
 
 	return ExternalPrincipal{
-		Issuer:          verifier.config.Issuer,
-		Subject:         subject,
-		Email:           email,
-		DisplayName:     displayName,
-		IsAdministrator: role == "admin",
+		Issuer:             verifier.config.Issuer,
+		Subject:            claims.Subject,
+		Email:              email,
+		DisplayName:        displayName,
+		IsAdministrator:    role == "admin",
+		AssertionExpiresAt: claims.ExpiresAt.Time,
 	}, nil
 }
 
@@ -152,18 +151,45 @@ func validJWTVerifierConfig(config JWTVerifierConfig) bool {
 	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.User == nil
 }
 
-func requiredExactStringClaim(claims jwt.MapClaims, name string) (string, bool) {
-	value, ok := claims[name].(string)
-	return value, ok && value != "" && value == strings.TrimSpace(value)
+type embeddedClaims struct {
+	jwt.RegisteredClaims
+	private map[string]json.RawMessage
 }
 
-func optionalStringClaim(claims jwt.MapClaims, name string) (string, bool) {
-	value, present := claims[name]
+func (claims *embeddedClaims) UnmarshalJSON(data []byte) error {
+	type registeredClaims jwt.RegisteredClaims
+	var registered registeredClaims
+	if err := json.Unmarshal(data, &registered); err != nil {
+		return err
+	}
+	var private map[string]json.RawMessage
+	if err := json.Unmarshal(data, &private); err != nil {
+		return err
+	}
+	claims.RegisteredClaims = jwt.RegisteredClaims(registered)
+	claims.private = private
+	return nil
+}
+
+func (claims *embeddedClaims) requiredExactString(name string) (string, bool) {
+	value, ok := claims.optionalString(name)
+	return value, ok && isExactNonBlankString(value)
+}
+
+func (claims *embeddedClaims) optionalString(name string) (string, bool) {
+	raw, present := claims.private[name]
 	if !present {
 		return "", true
 	}
-	text, ok := value.(string)
-	return text, ok
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func isExactNonBlankString(value string) bool {
+	return value != "" && value == strings.TrimSpace(value)
 }
 
 func (verifier *JWTVerifier) keyForID(ctx context.Context, kid string) (*rsa.PublicKey, bool) {

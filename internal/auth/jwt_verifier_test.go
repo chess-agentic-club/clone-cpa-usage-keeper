@@ -81,6 +81,35 @@ func TestJWTVerifierUsesConfiguredRoleClaim(t *testing.T) {
 	}
 }
 
+func TestJWTVerifierPropagatesValidatedAssertionExpiry(t *testing.T) {
+	key := newRSAKey(t)
+	server := newStaticJWKSServer(t, jwksDocument(t, testJWK("active", &key.PublicKey)))
+	verifier := newTestVerifier(server.URL)
+	expiresAt := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	claims := validClaims()
+	claims["exp"] = expiresAt.Unix()
+
+	principal, err := verifier.Verify(context.Background(), signRS256(t, key, "active", claims))
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if !principal.AssertionExpiresAt.Equal(expiresAt) {
+		t.Fatalf("assertion expiry = %s, want exact validated expiry %s", principal.AssertionExpiresAt, expiresAt)
+	}
+}
+
+func TestJWTVerifierRejectsExtremeNotBeforeNumericDate(t *testing.T) {
+	key := newRSAKey(t)
+	server := newStaticJWKSServer(t, jwksDocument(t, testJWK("active", &key.PublicKey)))
+	claims := validClaims()
+	claims["nbf"] = json.Number("-1e1000")
+
+	_, err := newTestVerifier(server.URL).Verify(context.Background(), signRS256(t, key, "active", claims))
+	if !isInvalidAssertion(err) {
+		t.Fatalf("expected out-of-range nbf rejection, got %v", err)
+	}
+}
+
 func TestJWTVerifierRejectsInvalidRegisteredAndIdentityClaims(t *testing.T) {
 	key := newRSAKey(t)
 	server := newStaticJWKSServer(t, jwksDocument(t, testJWK("active", &key.PublicKey)))
