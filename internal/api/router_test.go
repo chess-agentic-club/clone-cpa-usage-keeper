@@ -415,8 +415,10 @@ func TestLiteLLMCapabilitiesHideCPAOnlyRoutes(t *testing.T) {
 		t.Fatalf("unexpected LiteLLM source capabilities: %+v", status)
 	}
 
+	if !hasRouterRoute(router, http.MethodPost, "/api/v1/auth/api-key-login") {
+		t.Fatal("expected LiteLLM router to expose source-scoped viewer-key login")
+	}
 	for _, route := range []struct{ method, path string }{
-		{http.MethodPost, "/api/v1/auth/api-key-login"},
 		{http.MethodPatch, "/api/v1/auth-files/status"},
 		{http.MethodGet, "/api/v1/quota/inspection"},
 		{http.MethodGet, "/api/v1/usage/api-keys/settings"},

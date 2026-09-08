@@ -10,5 +10,12 @@ import (
 type SourceCapabilities = api.SourceCapabilities
 
 func sourceCapabilitiesFor(cfg config.Config) SourceCapabilities {
-	return api.SourceCapabilitiesForUsageSource(cfg.UsageSource)
+	switch cfg.UsageSource {
+	case "cliproxy", "litellm":
+		return api.SourceCapabilitiesForUsageSource(cfg.UsageSource)
+	default:
+		// New sources stay capability-disabled until their viewer adapter and
+		// source-specific dashboard semantics have been explicitly registered.
+		return SourceCapabilities{}
+	}
 }

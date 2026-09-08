@@ -45,13 +45,17 @@ type AuthConfig struct {
 	FrameAncestorOrigins            []string
 	TrustedProxyCIDRs               []string
 	APIKeyViewerLocalRankingEnabled bool
+	ViewerKeyRevalidationTTL        time.Duration
 }
 
 type authHandler struct {
-	config            AuthConfig
-	sessions          *auth.SessionManager
-	cpaAPIKeyProvider service.CPAAPIKeyProvider
-	loginAttempts     *auth.LoginAttemptLimiter
+	config                   AuthConfig
+	sessions                 *auth.SessionManager
+	legacyCPAAPIKeyProvider  service.CPAAPIKeyProvider
+	viewerKeyAuthenticator   auth.ViewerKeyAuthenticator
+	viewerPrincipalValidator auth.ViewerPrincipalValidator
+	viewerValidationCache    *auth.ViewerPrincipalValidationCache
+	loginAttempts            *auth.LoginAttemptLimiter
 }
 
 type loginRequest struct {
@@ -101,8 +105,9 @@ type resolvedSessionToken struct {
 
 func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandler {
 	return &authHandler{
-		config:   config,
-		sessions: sessions,
+		config:                config,
+		sessions:              sessions,
+		viewerValidationCache: auth.NewViewerPrincipalValidationCache(config.ViewerKeyRevalidationTTL),
 		loginAttempts: auth.NewLoginAttemptLimiter(auth.LoginAttemptLimiterOptions{
 			Window:         loginAttemptWindow,
 			PerSourceLimit: maxFailedLoginAttempts,
@@ -114,8 +119,22 @@ func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandl
 
 func (h *authHandler) setCPAAPIKeyProvider(provider service.CPAAPIKeyProvider) {
 	if h != nil {
-		h.cpaAPIKeyProvider = provider
+		h.legacyCPAAPIKeyProvider = provider
 	}
+}
+
+// SetViewerKeyAuthenticator configures the selected source's login and
+// revalidation adapter. It deliberately accepts only non-secret principals.
+func (h *authHandler) SetViewerKeyAuthenticator(authenticator auth.ViewerKeyAuthenticator, validator auth.ViewerPrincipalValidator) {
+	h.setViewerKeyAuthenticator(authenticator, validator)
+}
+
+func (h *authHandler) setViewerKeyAuthenticator(authenticator auth.ViewerKeyAuthenticator, validator auth.ViewerPrincipalValidator) {
+	if h == nil {
+		return
+	}
+	h.viewerKeyAuthenticator = authenticator
+	h.viewerPrincipalValidator = validator
 }
 
 func (h *authHandler) registerRoutes(router gin.IRoutes, apiKeyLoginEnabled bool) {
@@ -181,6 +200,13 @@ func (h *authHandler) activeAPIKeyViewerMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
+		// Principal-only sessions were already revalidated by roleMiddleware.
+		// Their source-specific usage scope is applied in Task 5, so they must
+		// not be forced through the legacy CPA API-key lookup here.
+		if session.CPAAPIKeyID == 0 {
+			c.Next()
+			return
+		}
 		row, ok := h.activeViewerAPIKey(c, resolved, session)
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -237,6 +263,13 @@ func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken,
 			}
 			continue
 		}
+		if !h.validateViewerSession(c, session) {
+			h.deleteSession(resolved.Token)
+			if resolved.Transport == sessionTokenTransportCookie {
+				clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
+			}
+			continue
+		}
 		return resolved, session, true
 	}
 	return resolveSessionToken(c), auth.Session{}, false
@@ -259,15 +292,22 @@ func (h *authHandler) getSession(c *gin.Context) {
 	}
 	response := sessionResponse{Authenticated: true, Role: session.Role}
 	if session.Role == auth.RoleAPIKeyViewer {
-		row, ok := h.activeViewerAPIKey(c, resolved, session)
-		if !ok {
-			c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
-			return
-		}
-		response.APIKey = &sessionAPIKeyResponse{
-			DisplayKey:          helper.CPAAPIKeyMaskedDisplayKey(row),
-			Alias:               row.KeyAlias,
-			LocalRankingEnabled: h.config.APIKeyViewerLocalRankingEnabled,
+		if session.CPAAPIKeyID > 0 {
+			row, ok := h.activeViewerAPIKey(c, resolved, session)
+			if !ok {
+				c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+				return
+			}
+			response.APIKey = &sessionAPIKeyResponse{
+				DisplayKey:          helper.CPAAPIKeyMaskedDisplayKey(row),
+				Alias:               row.KeyAlias,
+				LocalRankingEnabled: h.config.APIKeyViewerLocalRankingEnabled,
+			}
+		} else {
+			response.APIKey = &sessionAPIKeyResponse{
+				DisplayKey:          session.ViewerDisplayName,
+				LocalRankingEnabled: h.config.APIKeyViewerLocalRankingEnabled,
+			}
 		}
 	}
 	c.JSON(http.StatusOK, response)
@@ -320,7 +360,7 @@ func (h *authHandler) apiKeyLogin(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 		return
 	}
-	if h.sessions == nil || h.cpaAPIKeyProvider == nil {
+	if h.sessions == nil || h.viewerKeyAuthenticator == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
@@ -337,14 +377,14 @@ func (h *authHandler) apiKeyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
-	row, err := h.cpaAPIKeyProvider.FindActiveCPAAPIKeyByValue(c.Request.Context(), request.APIKey)
+	principal, err := h.viewerKeyAuthenticator.AuthenticateViewerKey(c.Request.Context(), request.APIKey)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 	h.loginAttempts.Reset(clientKey)
 	resolved := resolveSessionToken(c)
-	token, expiresAt, err := h.sessions.CreateAPIKeyViewerWithSourceAndMetadata(row.ID, resolved.Source, sessionClientMetadata(c))
+	token, expiresAt, err := h.sessions.CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(principal, resolved.Source, sessionClientMetadata(c))
 	if err != nil {
 		writeInternalError(c, "create api key viewer session failed", err)
 		return
@@ -354,18 +394,43 @@ func (h *authHandler) apiKeyLogin(c *gin.Context) {
 }
 
 func (h *authHandler) activeViewerAPIKey(c *gin.Context, resolved resolvedSessionToken, session auth.Session) (entities.CPAAPIKey, bool) {
-	if h.cpaAPIKeyProvider == nil || session.CPAAPIKeyID <= 0 {
+	if h.legacyCPAAPIKeyProvider == nil || session.CPAAPIKeyID <= 0 {
 		h.deleteSession(resolved.Token)
 		clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
 		return entities.CPAAPIKey{}, false
 	}
-	row, err := h.cpaAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), session.CPAAPIKeyID)
+	row, err := h.legacyCPAAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), session.CPAAPIKeyID)
 	if err != nil {
 		h.deleteSession(resolved.Token)
 		clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
 		return entities.CPAAPIKey{}, false
 	}
 	return row, true
+}
+
+func (h *authHandler) validateViewerSession(c *gin.Context, session auth.Session) bool {
+	if session.Role != auth.RoleAPIKeyViewer {
+		return true
+	}
+	if session.CPAAPIKeyID > 0 {
+		// Some compatibility-only routes (such as version) are constructed
+		// without a CPA provider. Preserve established legacy session behavior
+		// there; routes that require the active key still enforce it below.
+		if h.legacyCPAAPIKeyProvider == nil {
+			return true
+		}
+		_, err := h.legacyCPAAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), session.CPAAPIKeyID)
+		return err == nil
+	}
+	principal := auth.ViewerPrincipal{
+		SourceSystem: session.ViewerSourceSystem,
+		APIGroupKey:  session.ViewerAPIGroupKey,
+		DisplayName:  session.ViewerDisplayName,
+	}
+	if h.viewerValidationCache == nil {
+		h.viewerValidationCache = auth.NewViewerPrincipalValidationCache(h.config.ViewerKeyRevalidationTTL)
+	}
+	return h.viewerValidationCache.Validate(c.Request.Context(), h.viewerPrincipalValidator, principal) == nil
 }
 
 func (h *authHandler) logout(c *gin.Context) {

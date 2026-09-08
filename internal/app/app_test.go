@@ -240,15 +240,17 @@ func TestNewWithConfigLiteLLMGatesCPAOnlyCapabilitiesAndRoutes(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"usage_source":"litellm"`,
-		`"capabilities":{"api_key_analytics":true,"cpa_auth_files":false,"cpa_quota":false,"litellm_users":false,"litellm_teams":false}`,
+		`"capabilities":{"api_key_analytics":true,"cpa_auth_files":false,"cpa_quota":false,"litellm_users":false,"litellm_teams":false,"viewer_key_login":true}`,
 	} {
 		if !strings.Contains(status.Body.String(), want) {
 			t.Fatalf("expected LiteLLM status to include %s, got %s", want, status.Body.String())
 		}
 	}
 
+	if !hasAppRoute(app.Router, http.MethodPost, "/api/v1/auth/api-key-login") {
+		t.Fatal("expected LiteLLM to expose source-scoped viewer-key login")
+	}
 	for _, route := range []struct{ method, path string }{
-		{http.MethodPost, "/api/v1/auth/api-key-login"},
 		{http.MethodPatch, "/api/v1/auth-files/status"},
 		{http.MethodGet, "/api/v1/quota/inspection"},
 		{http.MethodGet, "/api/v1/usage/api-keys/settings"},
@@ -258,6 +260,15 @@ func TestNewWithConfigLiteLLMGatesCPAOnlyCapabilitiesAndRoutes(t *testing.T) {
 		if hasAppRoute(app.Router, route.method, route.path) {
 			t.Fatalf("expected LiteLLM to omit %s %s", route.method, route.path)
 		}
+	}
+}
+
+func TestViewerKeyLoginCapabilityRequiresRegisteredSourceAdapter(t *testing.T) {
+	if capabilities := sourceCapabilitiesFor(config.Config{UsageSource: "litellm"}); !capabilities.ViewerKeyLogin {
+		t.Fatalf("registered LiteLLM adapter must advertise viewer-key login: %+v", capabilities)
+	}
+	if capabilities := sourceCapabilitiesFor(config.Config{UsageSource: "future-source"}); capabilities != (SourceCapabilities{}) {
+		t.Fatalf("unsupported source must not advertise capabilities before adapter registration: %+v", capabilities)
 	}
 }
 

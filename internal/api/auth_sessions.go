@@ -117,10 +117,10 @@ func (h *authHandler) revokeManagedSession(c *gin.Context) {
 
 func (h *authHandler) sessionAPIKeysByID(c *gin.Context) (map[int64]entities.CPAAPIKey, bool) {
 	rowsByID := map[int64]entities.CPAAPIKey{}
-	if h == nil || h.cpaAPIKeyProvider == nil {
+	if h == nil || h.legacyCPAAPIKeyProvider == nil {
 		return rowsByID, true
 	}
-	rows, err := h.cpaAPIKeyProvider.ListCPAAPIKeys(c.Request.Context())
+	rows, err := h.legacyCPAAPIKeyProvider.ListCPAAPIKeys(c.Request.Context())
 	if err != nil {
 		writeInternalError(c, "list api keys for auth sessions failed", err)
 		return nil, false

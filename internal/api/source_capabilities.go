@@ -10,6 +10,7 @@ type SourceCapabilities struct {
 	CPAQuota        bool `json:"cpa_quota"`
 	LiteLLMUsers    bool `json:"litellm_users"`
 	LiteLLMTeams    bool `json:"litellm_teams"`
+	ViewerKeyLogin  bool `json:"viewer_key_login"`
 }
 
 // SourceCapabilitiesForUsageSource returns the supported feature set for a
@@ -17,13 +18,18 @@ type SourceCapabilities struct {
 // this function is called, while the CLIProxy default keeps direct router
 // construction backward compatible for tests and integrations.
 func SourceCapabilitiesForUsageSource(usageSource string) SourceCapabilities {
-	if strings.EqualFold(strings.TrimSpace(usageSource), "litellm") {
-		return SourceCapabilities{APIKeyAnalytics: true}
-	}
-	return SourceCapabilities{
-		APIKeyAnalytics: true,
-		CPAAuthFiles:    true,
-		CPAQuota:        true,
+	switch strings.ToLower(strings.TrimSpace(usageSource)) {
+	case "litellm":
+		return SourceCapabilities{APIKeyAnalytics: true, ViewerKeyLogin: true}
+	case "", "cliproxy":
+		return SourceCapabilities{
+			APIKeyAnalytics: true,
+			CPAAuthFiles:    true,
+			CPAQuota:        true,
+			ViewerKeyLogin:  true,
+		}
+	default:
+		return SourceCapabilities{}
 	}
 }
 

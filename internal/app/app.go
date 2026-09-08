@@ -331,9 +331,20 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		FrameAncestorOrigins:            frameAncestorOrigins(cfg),
 		TrustedProxyCIDRs:               cfg.TrustedProxyCIDRs,
 		APIKeyViewerLocalRankingEnabled: cfg.APIKeyViewerLocalRankingEnabled,
+		ViewerKeyRevalidationTTL:        cfg.ViewerKeyRevalidationTTL,
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
 	capabilities := sourceCapabilitiesFor(cfg)
+	switch cfg.UsageSource {
+	case "cliproxy":
+		viewerAdapter := service.NewCPAAPIKeyViewerAdapter(cpaAPIKeyService)
+		authHandler.SetViewerKeyAuthenticator(viewerAdapter, viewerAdapter)
+	case "litellm":
+		// Viewer authentication uses the submitted virtual key only; the
+		// ingestion master key must never be supplied to this adapter.
+		viewerAdapter := poller.NewLiteLLMViewerKeyAuthenticator(cfg.LiteLLMBaseURL, cfg.RequestTimeout)
+		authHandler.SetViewerKeyAuthenticator(viewerAdapter, viewerAdapter)
+	}
 	optionalProviders := api.OptionalProviders{
 		UsageIdentity:         usageIdentityService,
 		UsageAPIKeyIdentities: service.NewUsageAPIKeyIdentityService(db),

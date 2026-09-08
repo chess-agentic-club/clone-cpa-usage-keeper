@@ -18,7 +18,7 @@ var configEnvKeys = []string{
 	"SQLITE_PATH", "BACKUP_ENABLED", "BACKUP_DIR", "BACKUP_INTERVAL", "BACKUP_RETENTION_DAYS",
 	"REQUEST_TIMEOUT", "LOG_LEVEL", "LOG_FILE_ENABLED", "LOG_DIR", "LOG_RETENTION_DAYS",
 	"AUTH_ENABLED", "LOGIN_PASSWORD", "AUTH_SESSION_TTL", "TRUSTED_PROXY_CIDRS", "TZ", "TLS_SKIP_VERIFY", "QUOTA_REFRESH_WORKER_LIMIT", "QUOTA_UPSTREAM_RESPONSES_ENABLED",
-	"API_KEY_VIEWER_LOCAL_RANKING_ENABLED",
+	"API_KEY_VIEWER_LOCAL_RANKING_ENABLED", "VIEWER_KEY_REVALIDATION_TTL",
 	"USAGE_SOURCE", "LITELLM_BASE_URL", "LITELLM_MASTER_KEY", "LITELLM_SYNC_INTERVAL", "LITELLM_PAGE_SIZE", "LITELLM_OVERLAP",
 }
 
@@ -139,6 +139,9 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	if cfg.AuthSessionTTL != 7*24*time.Hour {
 		t.Fatalf("expected default auth session ttl 168h, got %s", cfg.AuthSessionTTL)
 	}
+	if cfg.ViewerKeyRevalidationTTL != time.Minute {
+		t.Fatalf("expected default viewer key revalidation ttl 1m, got %s", cfg.ViewerKeyRevalidationTTL)
+	}
 	if cfg.TLSSkipVerify {
 		t.Fatal("expected TLS skip verify to be disabled by default")
 	}
@@ -168,6 +171,27 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	}
 	if cfg.LogRetentionDays != 7 {
 		t.Fatalf("expected default log retention 7 days, got %d", cfg.LogRetentionDays)
+	}
+}
+
+func TestLoadFromEnvRequiresPositiveViewerKeyRevalidationTTL(t *testing.T) {
+	t.Setenv("CPA_BASE_URL", "http://127.0.0.1:"+cpa.ManagementRedisDefaultPort)
+	t.Setenv("CPA_MANAGEMENT_KEY", "secret")
+
+	for _, value := range []string{"0s", "-1s"} {
+		t.Setenv("VIEWER_KEY_REVALIDATION_TTL", value)
+		if _, err := LoadFromEnv(); err == nil || err.Error() != "VIEWER_KEY_REVALIDATION_TTL must be positive" {
+			t.Fatalf("TTL %q error = %v, want positive validation error", value, err)
+		}
+	}
+
+	t.Setenv("VIEWER_KEY_REVALIDATION_TTL", "3m")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv returned error: %v", err)
+	}
+	if cfg.ViewerKeyRevalidationTTL != 3*time.Minute {
+		t.Fatalf("viewer key revalidation ttl = %s, want 3m", cfg.ViewerKeyRevalidationTTL)
 	}
 }
 

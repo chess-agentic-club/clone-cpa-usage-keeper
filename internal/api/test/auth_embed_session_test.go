@@ -104,8 +104,8 @@ func TestAPIKeyLoginSetsEmbedCookieAndSourceForCPAMCEmbedRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("expected API key embed login session to be stored")
 	}
-	if session.Role != auth.RoleAPIKeyViewer || session.Source != auth.SessionSourceEmbed || session.CPAAPIKeyID != 42 {
-		t.Fatalf("expected API key embed session with source and key id, got %+v", session)
+	if session.Role != auth.RoleAPIKeyViewer || session.Source != auth.SessionSourceEmbed || session.CPAAPIKeyID != 0 || session.ViewerSourceSystem != "cliproxy" || session.ViewerAPIGroupKey != "cliproxy:42" || session.ViewerDisplayName != "sk-*********viewer" {
+		t.Fatalf("expected source-scoped API key embed session, got %+v", session)
 	}
 }
 

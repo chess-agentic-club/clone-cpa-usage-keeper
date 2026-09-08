@@ -111,6 +111,9 @@ type Config struct {
 	LoginPassword string
 	// AuthSessionTTL 是登录 session 有效时长。
 	AuthSessionTTL time.Duration
+	// ViewerKeyRevalidationTTL is the maximum age of a successful
+	// source-scoped viewer-principal validation.
+	ViewerKeyRevalidationTTL time.Duration
 }
 
 type LoadOptions struct {
@@ -246,6 +249,13 @@ func Load(options LoadOptions) (*Config, error) {
 	if authSessionTTL <= 0 {
 		return nil, fmt.Errorf("AUTH_SESSION_TTL must be positive")
 	}
+	viewerKeyRevalidationTTL, err := getDuration("VIEWER_KEY_REVALIDATION_TTL", time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	if viewerKeyRevalidationTTL <= 0 {
+		return nil, fmt.Errorf("VIEWER_KEY_REVALIDATION_TTL must be positive")
+	}
 
 	authEnabledValue := strings.TrimSpace(os.Getenv("AUTH_ENABLED"))
 	authEnabled, err := getBool("AUTH_ENABLED", true)
@@ -327,6 +337,7 @@ func Load(options LoadOptions) (*Config, error) {
 		AuthEnabled:                     authEnabled,
 		LoginPassword:                   strings.TrimSpace(os.Getenv("LOGIN_PASSWORD")),
 		AuthSessionTTL:                  authSessionTTL,
+		ViewerKeyRevalidationTTL:        viewerKeyRevalidationTTL,
 	}
 	if appHost := strings.TrimSpace(options.AppHost); appHost != "" {
 		cfg.AppHost = appHost

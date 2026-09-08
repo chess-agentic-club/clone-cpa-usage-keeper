@@ -119,8 +119,12 @@ func NewRouter(
 		statusConfig = optionalProviders[0].Status
 	}
 	capabilities := sourceCapabilitiesForStatus(statusConfig)
-	authHandler.registerRoutes(authGroup, capabilities.HasCPAIntegration())
 	authHandler.setCPAAPIKeyProvider(cpaAPIKeyProvider)
+	if capabilities.HasCPAIntegration() && authHandler.viewerKeyAuthenticator == nil {
+		viewerAdapter := service.NewCPAAPIKeyViewerAdapter(cpaAPIKeyProvider)
+		authHandler.setViewerKeyAuthenticator(viewerAdapter, viewerAdapter)
+	}
+	authHandler.registerRoutes(authGroup, capabilities.ViewerKeyLogin)
 	requestLogDownloadTokens := newRequestLogDownloadTokenStore()
 
 	if capabilities.HasCPAIntegration() {

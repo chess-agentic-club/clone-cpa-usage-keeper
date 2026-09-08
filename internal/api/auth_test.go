@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
+	"github.com/sirupsen/logrus"
 )
 
 type authCPAAPIKeyStub struct {
@@ -20,6 +23,33 @@ type authCPAAPIKeyStub struct {
 	byValueKey  string
 	byIDCalls   int
 	byValueCall int
+}
+
+type authViewerKeyAdapterStub struct {
+	principal       auth.ViewerPrincipal
+	authenticateErr error
+	validationErr   error
+	authenticateKey string
+	validationCalls int
+}
+
+func (s *authViewerKeyAdapterStub) AuthenticateViewerKey(_ context.Context, rawKey string) (auth.ViewerPrincipal, error) {
+	s.authenticateKey = rawKey
+	if s.authenticateErr != nil {
+		return auth.ViewerPrincipal{}, s.authenticateErr
+	}
+	return s.principal, nil
+}
+
+func (s *authViewerKeyAdapterStub) ValidateViewerPrincipal(_ context.Context, principal auth.ViewerPrincipal) error {
+	s.validationCalls++
+	if s.validationErr != nil {
+		return s.validationErr
+	}
+	if principal != s.principal {
+		return auth.ErrViewerPrincipalUnavailable
+	}
+	return nil
 }
 
 func (s *authCPAAPIKeyStub) ListCPAAPIKeys(context.Context) ([]entities.CPAAPIKey, error) {
@@ -175,7 +205,7 @@ func TestAuthAPIKeyLoginSetsViewerSessionCookieAndSessionSummary(t *testing.T) {
 	router.ServeHTTP(sessionResp, sessionReq)
 
 	body := sessionResp.Body.String()
-	if sessionResp.Code != http.StatusOK || !contains(body, `"authenticated":true`) || !contains(body, `"role":"api_key_viewer"`) || !contains(body, `"api_key":{"display_key":"sk-*********123456","alias":"Team Key"}`) {
+	if sessionResp.Code != http.StatusOK || !contains(body, `"authenticated":true`) || !contains(body, `"role":"api_key_viewer"`) || !contains(body, `"api_key":{"display_key":"Team Key"}`) {
 		t.Fatalf("unexpected session response: %d %s", sessionResp.Code, body)
 	}
 	if contains(body, "sk-live123456") || contains(body, "sk-l************3456") {
@@ -198,6 +228,185 @@ func TestAuthAPIKeyLoginFailuresAreGenericUnauthorized(t *testing.T) {
 		if resp.Code != http.StatusUnauthorized || !contains(resp.Body.String(), "invalid credentials") {
 			t.Fatalf("expected generic 401 for %s, got %d %s", body, resp.Code, resp.Body.String())
 		}
+	}
+}
+
+func TestAuthAPIKeyLoginInvalidKeyDoesNotLeakRawKeyToResponseLogsOrSessions(t *testing.T) {
+	const rawKey = "future-source-secret-viewer-key"
+	sessions := auth.NewSessionManager(time.Hour)
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour, ViewerKeyRevalidationTTL: time.Minute}
+	adapter := &authViewerKeyAdapterStub{authenticateErr: errors.New("upstream rejected " + rawKey)}
+	handler := NewAuthHandler(config, sessions)
+	handler.setViewerKeyAuthenticator(adapter, adapter)
+	router := NewRouter(nil, nil, nil, nil, config, handler, "", OptionalProviders{
+		Status: StatusRouteConfig{
+			UsageSource:  "future-source",
+			Capabilities: SourceCapabilities{ViewerKeyLogin: true},
+		},
+	})
+
+	logger := logrus.StandardLogger()
+	previousOutput := logger.Out
+	var logs bytes.Buffer
+	logger.SetOutput(&logs)
+	t.Cleanup(func() { logger.SetOutput(previousOutput) })
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"`+rawKey+`"}`))
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized || resp.Body.String() != `{"error":"invalid credentials"}` {
+		t.Fatalf("expected generic invalid-key response, got %d %s", resp.Code, resp.Body.String())
+	}
+	storedSessions, err := json.Marshal(sessions.List())
+	if err != nil {
+		t.Fatalf("marshal stored sessions: %v", err)
+	}
+	if len(sessions.List()) != 0 {
+		t.Fatalf("invalid key created a session: %s", storedSessions)
+	}
+	for surface, value := range map[string]string{
+		"response": resp.Body.String(),
+		"logs":     logs.String(),
+		"sessions": string(storedSessions),
+	} {
+		if strings.Contains(value, rawKey) {
+			t.Fatalf("raw viewer key leaked into %s: %q", surface, value)
+		}
+	}
+}
+
+func TestAuthAPIKeyLoginCreatesPrincipalOnlySessionWithoutLeakingRawKey(t *testing.T) {
+	const rawKey = "future-source-raw-viewer-key"
+	sessions := auth.NewSessionManager(time.Hour)
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour, ViewerKeyRevalidationTTL: time.Minute}
+	adapter := &authViewerKeyAdapterStub{principal: auth.ViewerPrincipal{SourceSystem: "future-source", APIGroupKey: "future-source:key-1", DisplayName: "Future team"}}
+	handler := NewAuthHandler(config, sessions)
+	handler.setViewerKeyAuthenticator(adapter, adapter)
+	router := NewRouter(nil, nil, nil, nil, config, handler, "", OptionalProviders{Status: StatusRouteConfig{Capabilities: SourceCapabilities{ViewerKeyLogin: true}}})
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"`+rawKey+`"}`))
+	loginReq.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	loginReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(loginResp, loginReq)
+
+	if loginResp.Code != http.StatusNoContent {
+		t.Fatalf("expected API key login status 204, got %d %s", loginResp.Code, loginResp.Body.String())
+	}
+	if adapter.authenticateKey != rawKey {
+		t.Fatalf("authenticator received %q, want raw key", adapter.authenticateKey)
+	}
+	cookies := loginResp.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected one session cookie, got %+v", cookies)
+	}
+	session, ok := sessions.Get(cookies[0].Value)
+	if !ok {
+		t.Fatal("expected viewer session to be stored")
+	}
+	if session.CPAAPIKeyID != 0 || session.ViewerSourceSystem != "future-source" || session.ViewerAPIGroupKey != "future-source:key-1" || session.ViewerDisplayName != "Future team" {
+		t.Fatalf("expected principal-only session, got %+v", session)
+	}
+	for _, value := range []string{loginResp.Body.String(), session.ViewerSourceSystem, session.ViewerAPIGroupKey, session.ViewerDisplayName} {
+		if strings.Contains(value, rawKey) {
+			t.Fatalf("raw key leaked from login result or stored session: %q", value)
+		}
+	}
+}
+
+func TestAuthViewerPrincipalRevalidationDeletesInvalidSessionAndClearsCookie(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour, ViewerKeyRevalidationTTL: time.Millisecond}
+	adapter := &authViewerKeyAdapterStub{principal: auth.ViewerPrincipal{SourceSystem: "future-source", APIGroupKey: "future-source:key-1", DisplayName: "Future team"}}
+	handler := NewAuthHandler(config, sessions)
+	handler.setViewerKeyAuthenticator(adapter, adapter)
+	router := NewRouter(nil, nil, nil, nil, config, handler, "", OptionalProviders{Status: StatusRouteConfig{Capabilities: SourceCapabilities{ViewerKeyLogin: true}}})
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"future-source-raw-viewer-key"}`))
+	loginReq.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	loginReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusNoContent {
+		t.Fatalf("login status = %d, body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	cookie := loginResp.Result().Cookies()[0]
+
+	validResp := httptest.NewRecorder()
+	validReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	validReq.AddCookie(cookie)
+	router.ServeHTTP(validResp, validReq)
+	if validResp.Code != http.StatusOK || !contains(validResp.Body.String(), `"authenticated":true`) || adapter.validationCalls != 1 {
+		t.Fatalf("expected cached validation seed to authenticate once, got status=%d calls=%d body=%s", validResp.Code, adapter.validationCalls, validResp.Body.String())
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	adapter.validationErr = auth.ErrViewerPrincipalUnavailable
+	rejectedResp := httptest.NewRecorder()
+	rejectedReq := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
+	rejectedReq.AddCookie(cookie)
+	router.ServeHTTP(rejectedResp, rejectedReq)
+
+	if rejectedResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected expired-cache validation failure to return 401, got %d %s", rejectedResp.Code, rejectedResp.Body.String())
+	}
+	if sessions.Validate(cookie.Value) {
+		t.Fatal("expected invalid viewer principal session to be deleted")
+	}
+	cleared := rejectedResp.Result().Cookies()
+	if len(cleared) != 1 || cleared[0].Name != sessionCookieName || cleared[0].MaxAge >= 0 {
+		t.Fatalf("expected invalid viewer session cookie to be cleared, got %+v", cleared)
+	}
+}
+
+func TestAuthLegacyCPAViewerSessionRemainsValid(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	token, _, err := sessions.CreateAPIKeyViewer(42)
+	if err != nil {
+		t.Fatalf("CreateAPIKeyViewer returned error: %v", err)
+	}
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour, ViewerKeyRevalidationTTL: time.Minute}
+	keyProvider := &authCPAAPIKeyStub{row: entities.CPAAPIKey{ID: 42, DisplayKey: "sk-*********live"}}
+	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{CPAAPIKeys: keyProvider, Status: StatusRouteConfig{Capabilities: SourceCapabilities{ViewerKeyLogin: true}}})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK || !contains(resp.Body.String(), `"authenticated":true`) || !sessions.Validate(token) {
+		t.Fatalf("expected legacy CPA viewer session to remain valid, got %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestAuthPrincipalViewerDoesNotUseLegacyCPAKeyMiddleware(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour, ViewerKeyRevalidationTTL: time.Minute}
+	adapter := &authViewerKeyAdapterStub{principal: auth.ViewerPrincipal{SourceSystem: "future-source", APIGroupKey: "future-source:key-1", DisplayName: "Future team"}}
+	handler := NewAuthHandler(config, sessions)
+	handler.setViewerKeyAuthenticator(adapter, adapter)
+	router := NewRouter(nil, nil, nil, nil, config, handler, "", OptionalProviders{Status: StatusRouteConfig{Capabilities: SourceCapabilities{ViewerKeyLogin: true}}})
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"future-source-raw-viewer-key"}`))
+	loginReq.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	loginReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusNoContent {
+		t.Fatalf("login status = %d, body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	cookie := loginResp.Result().Cookies()[0]
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview", nil)
+	req.AddCookie(cookie)
+	router.ServeHTTP(resp, req)
+
+	if !sessions.Validate(cookie.Value) {
+		t.Fatalf("principal-only viewer session was deleted by a legacy CPA-key route: status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
