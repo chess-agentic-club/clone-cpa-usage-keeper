@@ -326,6 +326,105 @@ func registerUsageEventsRoute(
 	})
 }
 
+func registerKeyUsageEventsRoute(router gin.IRoutes, usageProvider service.UsageProvider) {
+	exportSlots := make(chan struct{}, usageEventsExportMaxConcurrency)
+
+	router.GET("/key-events/filters/models", func(c *gin.Context) {
+		principal, session, ok := viewerScopeFromContext(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		filter := servicedto.UsageFilter{}
+		applyViewerScope(&filter, principal, session)
+		models, err := loadUsageEventModelFilterOptionsWithFilter(c, usageProvider, filter)
+		if err != nil {
+			writeInternalError(c, "list usage event model filter options failed", err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"models": models})
+	})
+
+	router.GET("/key-events/filters/sources", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"sources": []usageSourceFilterOption{}})
+	})
+
+	router.GET("/key-events", func(c *gin.Context) {
+		principal, session, ok := viewerScopeFromContext(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		filter, err := parseKeyUsageFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		applyViewerScope(&filter, principal, session)
+		if usageProvider == nil {
+			c.JSON(http.StatusOK, usageEventsResponse{Events: []usageEventPayload{}, Page: 1, PageSize: servicedto.DefaultUsageEventsLimit})
+			return
+		}
+		rows, err := usageProvider.ListUsageEvents(c.Request.Context(), filter)
+		if err != nil {
+			writeInternalError(c, "list usage events failed", err)
+			return
+		}
+		nextCursor := ""
+		if filter.CursorMode && rows.HasMore && len(rows.Events) > 0 {
+			lastEvent := rows.Events[len(rows.Events)-1]
+			nextCursor = encodeUsageEventsCursor(lastEvent.Timestamp, lastEvent.ID)
+		}
+		infos := map[string]analysisAPIKeyInfo{principal.APIGroupKey: {ID: "viewer", Label: principal.DisplayName}}
+		c.JSON(http.StatusOK, usageEventsResponse{Events: buildUsageEventsPayload(rows.Events, newUsageIdentityResolver(nil), infos), TotalCount: rows.TotalCount, Page: rows.Page, PageSize: rows.PageSize, TotalPages: rows.TotalPages, NextCursor: nextCursor, HasMore: rows.HasMore})
+	})
+
+	router.GET("/key-events/export", func(c *gin.Context) {
+		principal, session, ok := viewerScopeFromContext(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		format := strings.ToLower(strings.TrimSpace(c.Query("format")))
+		if format == "" {
+			format = "csv"
+		}
+		if format != "csv" && format != "json" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid export format"})
+			return
+		}
+		filter, err := parseKeyUsageExportFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		applyViewerScope(&filter, principal, session)
+		select {
+		case exportSlots <- struct{}{}:
+			defer func() { <-exportSlots }()
+		default:
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "usage events export capacity is full"})
+			return
+		}
+		stream := func(emit func(servicedto.UsageEventRecord) error) error {
+			if usageProvider == nil {
+				return nil
+			}
+			return usageProvider.StreamUsageEvents(c.Request.Context(), filter, emit)
+		}
+		resolver := newUsageIdentityResolver(nil)
+		infos := map[string]analysisAPIKeyInfo{principal.APIGroupKey: {ID: "viewer", Label: principal.DisplayName}}
+		if format == "json" {
+			err = writeUsageEventsJSONExport(c, stream, resolver, infos)
+		} else {
+			err = writeUsageEventsCSVExport(c, stream, resolver, infos)
+		}
+		if err != nil {
+			writeUsageEventsExportError(c, err)
+		}
+	})
+}
+
 func registerUsageEventRequestLogDownloadTokenRoutes(
 	router gin.IRoutes,
 	requestLogProvider service.RequestLogProvider,
@@ -865,10 +964,14 @@ func usageEventPublicSource(row servicedto.UsageEventRecord, identity resolvedUs
 }
 
 func loadUsageEventModelFilterOptions(c *gin.Context, usageProvider service.UsageProvider) ([]string, error) {
+	return loadUsageEventModelFilterOptionsWithFilter(c, usageProvider, servicedto.UsageFilter{})
+}
+
+func loadUsageEventModelFilterOptionsWithFilter(c *gin.Context, usageProvider service.UsageProvider, filter servicedto.UsageFilter) ([]string, error) {
 	if usageProvider == nil {
 		return []string{}, nil
 	}
-	options, err := usageProvider.ListUsageEventFilterOptions(c.Request.Context(), servicedto.UsageFilter{})
+	options, err := usageProvider.ListUsageEventFilterOptions(c.Request.Context(), filter)
 	if err != nil {
 		return nil, err
 	}

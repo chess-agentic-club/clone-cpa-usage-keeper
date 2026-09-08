@@ -120,6 +120,27 @@ func TestViewerScopeFromSessionReturnsCanonicalPrincipal(t *testing.T) {
 	}
 }
 
+func TestManagedViewerSessionNeverUsesCanonicalGroupKeyAsDisplayLabel(t *testing.T) {
+	const canonical = "litellm:raw-secret-token"
+	items := buildAuthSessionItems([]auth.SessionRecord{{
+		TokenHash:          "viewer-session",
+		Role:               auth.RoleAPIKeyViewer,
+		ViewerSourceSystem: "litellm",
+		ViewerAPIGroupKey:  canonical,
+		ViewerDisplayName:  canonical,
+	}}, nil, "")
+	if len(items) != 1 {
+		t.Fatalf("expected one session item, got %+v", items)
+	}
+	payload, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal session item: %v", err)
+	}
+	if strings.Contains(string(payload), canonical) {
+		t.Fatalf("canonical viewer group key leaked in session JSON: %s", payload)
+	}
+}
+
 func TestAuthProtectedRouteRequiresSessionWhenEnabled(t *testing.T) {
 	sessions := auth.NewSessionManager(time.Hour)
 	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}

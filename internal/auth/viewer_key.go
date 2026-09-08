@@ -29,6 +29,12 @@ type ViewerPrincipalValidator interface {
 	ValidateViewerPrincipal(context.Context, ViewerPrincipal) error
 }
 
+// ViewerPrincipalResolver converts a persisted source-owned principal into
+// the canonical analytics group identity used by trusted server queries.
+type ViewerPrincipalResolver interface {
+	ResolveViewerPrincipal(context.Context, ViewerPrincipal) (ViewerPrincipal, error)
+}
+
 // NormalizeViewerPrincipal removes presentation whitespace and rejects an
 // incomplete principal before it can be persisted or used as a cache entry.
 func NormalizeViewerPrincipal(principal ViewerPrincipal) (ViewerPrincipal, error) {

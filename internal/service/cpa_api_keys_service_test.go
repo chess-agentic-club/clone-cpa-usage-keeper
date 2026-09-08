@@ -69,6 +69,13 @@ func TestCPAAPIKeyServiceViewerAdapterReturnsCanonicalActiveKey(t *testing.T) {
 	if err := adapter.ValidateViewerPrincipal(context.Background(), principal); err != nil {
 		t.Fatalf("ValidateViewerPrincipal returned error: %v", err)
 	}
+	resolved, err := adapter.ResolveViewerPrincipal(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("ResolveViewerPrincipal returned error: %v", err)
+	}
+	if resolved.APIGroupKey != "sk-active123456" || resolved.DisplayName != principal.DisplayName {
+		t.Fatalf("expected opaque principal to resolve to canonical analytics key, got %+v", resolved)
+	}
 
 	if _, err := adapter.AuthenticateViewerKey(context.Background(), "sk-inactive123456"); !errors.Is(err, auth.ErrInvalidViewerCredentials) {
 		t.Fatalf("inactive key error = %v, want generic invalid credentials", err)

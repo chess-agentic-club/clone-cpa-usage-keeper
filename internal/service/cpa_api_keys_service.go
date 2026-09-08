@@ -48,6 +48,7 @@ type cpaAPIKeyViewerAdapter struct {
 func NewCPAAPIKeyViewerAdapter(provider CPAAPIKeyProvider) interface {
 	auth.ViewerKeyAuthenticator
 	auth.ViewerPrincipalValidator
+	auth.ViewerPrincipalResolver
 } {
 	return &cpaAPIKeyViewerAdapter{provider: provider}
 }
@@ -72,19 +73,26 @@ func (a *cpaAPIKeyViewerAdapter) AuthenticateViewerKey(ctx context.Context, rawK
 }
 
 func (a *cpaAPIKeyViewerAdapter) ValidateViewerPrincipal(ctx context.Context, principal auth.ViewerPrincipal) error {
+	_, err := a.ResolveViewerPrincipal(ctx, principal)
+	return err
+}
+
+func (a *cpaAPIKeyViewerAdapter) ResolveViewerPrincipal(ctx context.Context, principal auth.ViewerPrincipal) (auth.ViewerPrincipal, error) {
 	principal, err := auth.NormalizeViewerPrincipal(principal)
 	if err != nil || principal.SourceSystem != CLIProxyViewerSourceSystem || a == nil || a.provider == nil {
-		return auth.ErrViewerPrincipalUnavailable
+		return auth.ViewerPrincipal{}, auth.ErrViewerPrincipalUnavailable
 	}
 	idValue := strings.TrimPrefix(principal.APIGroupKey, CLIProxyViewerSourceSystem+":")
 	id, parseErr := strconv.ParseInt(idValue, 10, 64)
 	if !strings.HasPrefix(principal.APIGroupKey, CLIProxyViewerSourceSystem+":") || parseErr != nil || id <= 0 || principal.APIGroupKey != cliProxyViewerAPIGroupKey(id) {
-		return auth.ErrViewerPrincipalUnavailable
+		return auth.ViewerPrincipal{}, auth.ErrViewerPrincipalUnavailable
 	}
-	if _, err := a.provider.FindActiveCPAAPIKeyByID(ctx, id); err != nil {
-		return auth.ErrViewerPrincipalUnavailable
+	row, err := a.provider.FindActiveCPAAPIKeyByID(ctx, id)
+	if err != nil || strings.TrimSpace(row.APIKey) == "" {
+		return auth.ViewerPrincipal{}, auth.ErrViewerPrincipalUnavailable
 	}
-	return nil
+	principal.APIGroupKey = row.APIKey
+	return principal, nil
 }
 
 func (s *cpaAPIKeyService) ListCPAAPIKeys(context.Context) ([]entities.CPAAPIKey, error) {

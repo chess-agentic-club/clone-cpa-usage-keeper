@@ -222,7 +222,7 @@ func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.Usa
 			return
 		}
 		apiKeyInfos := map[string]analysisAPIKeyInfo{
-			principal.APIGroupKey: {ID: principal.APIGroupKey, Label: principal.DisplayName},
+			principal.APIGroupKey: {ID: "viewer", Label: principal.DisplayName},
 		}
 		if _, apiKey, legacy := activeAPIKeyViewerContext(c); legacy {
 			apiKeyInfos[apiKey.APIKey] = analysisAPIKeyInfo{ID: strconv.FormatInt(apiKey.ID, 10), Label: helper.CPAAPIKeyDisplayName(apiKey)}

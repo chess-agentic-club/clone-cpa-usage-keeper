@@ -55,6 +55,7 @@ type authHandler struct {
 	legacyCPAAPIKeyProvider  service.CPAAPIKeyProvider
 	viewerKeyAuthenticator   auth.ViewerKeyAuthenticator
 	viewerPrincipalValidator auth.ViewerPrincipalValidator
+	viewerPrincipalResolver  auth.ViewerPrincipalResolver
 	viewerValidationCache    *auth.ViewerPrincipalValidationCache
 	loginAttempts            *auth.LoginAttemptLimiter
 }
@@ -136,6 +137,7 @@ func (h *authHandler) setViewerKeyAuthenticator(authenticator auth.ViewerKeyAuth
 	}
 	h.viewerKeyAuthenticator = authenticator
 	h.viewerPrincipalValidator = validator
+	h.viewerPrincipalResolver, _ = authenticator.(auth.ViewerPrincipalResolver)
 }
 
 func (h *authHandler) registerRoutes(router gin.IRoutes, apiKeyLoginEnabled bool) {
@@ -212,31 +214,19 @@ func (h *authHandler) activeAPIKeyViewerMiddleware() gin.HandlerFunc {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 				return
 			}
-			if principal.SourceSystem == service.CLIProxyViewerSourceSystem {
-				idValue := strings.TrimPrefix(principal.APIGroupKey, service.CLIProxyViewerSourceSystem+":")
-				id, err := strconv.ParseInt(idValue, 10, 64)
-				if !strings.HasPrefix(principal.APIGroupKey, service.CLIProxyViewerSourceSystem+":") || err != nil || id <= 0 || h.legacyCPAAPIKeyProvider == nil {
-					h.deleteSession(resolved.Token)
-					clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-					return
-				}
-				row, err := h.legacyCPAAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), id)
+			if h.viewerPrincipalResolver != nil {
+				principal, err := h.viewerPrincipalResolver.ResolveViewerPrincipal(c.Request.Context(), principal)
 				if err != nil {
 					h.deleteSession(resolved.Token)
 					clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 					return
 				}
-				session.ViewerAPIGroupKey = row.APIKey
-				if strings.TrimSpace(session.ViewerAPIGroupKey) == "" {
-					session.ViewerAPIGroupKey = service.CLIProxyViewerSourceSystem + ":" + strconv.FormatInt(row.ID, 10)
-				}
-				if strings.TrimSpace(session.ViewerDisplayName) == "" {
-					session.ViewerDisplayName = helper.CPAAPIKeyDisplayName(row)
-				}
-				c.Set(authSessionContextKey, session)
+				session.ViewerSourceSystem = principal.SourceSystem
+				session.ViewerAPIGroupKey = principal.APIGroupKey
+				session.ViewerDisplayName = principal.DisplayName
 			}
+			c.Set(authSessionContextKey, session)
 			c.Next()
 			return
 		}
@@ -248,10 +238,10 @@ func (h *authHandler) activeAPIKeyViewerMiddleware() gin.HandlerFunc {
 		// Normalize legacy CPA sessions into the same trusted principal shape as
 		// source-scoped sessions. The canonical analytics key comes from the
 		// active server-side CPA row, never from request query parameters.
-		session.ViewerSourceSystem = service.CLIProxyViewerSourceSystem
+		session.ViewerSourceSystem = "legacy"
 		session.ViewerAPIGroupKey = row.APIKey
 		if strings.TrimSpace(session.ViewerAPIGroupKey) == "" {
-			session.ViewerAPIGroupKey = service.CLIProxyViewerSourceSystem + ":" + strconv.FormatInt(row.ID, 10)
+			session.ViewerAPIGroupKey = strconv.FormatInt(row.ID, 10)
 		}
 		session.ViewerDisplayName = helper.CPAAPIKeyDisplayName(row)
 		c.Set(authSessionContextKey, session)

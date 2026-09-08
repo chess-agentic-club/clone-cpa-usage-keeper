@@ -148,9 +148,35 @@ func parseUsageFilterQuery(req *http.Request, anchor time.Time) (servicedto.Usag
 	return parseUsageFilterQueryWithLatestIdentity(req, anchor, true)
 }
 
+func parseKeyUsageFilterQuery(req *http.Request, anchor time.Time) (servicedto.UsageFilter, error) {
+	if req == nil || req.URL == nil {
+		return parseUsageFilterQuery(req, anchor)
+	}
+	viewerRequest := req.Clone(req.Context())
+	viewerURL := *req.URL
+	query := viewerURL.Query()
+	query.Del("api_key_id")
+	viewerURL.RawQuery = query.Encode()
+	viewerRequest.URL = &viewerURL
+	return parseUsageFilterQuery(viewerRequest, anchor)
+}
+
 // Export 保持 Request Events 原有的必选时间范围，不消费详情抽屉的无范围查询例外。
 func parseUsageExportFilterQuery(req *http.Request, anchor time.Time) (servicedto.UsageFilter, error) {
 	return parseUsageFilterQueryWithLatestIdentity(req, anchor, false)
+}
+
+func parseKeyUsageExportFilterQuery(req *http.Request, anchor time.Time) (servicedto.UsageFilter, error) {
+	if req == nil || req.URL == nil {
+		return parseUsageExportFilterQuery(req, anchor)
+	}
+	viewerRequest := req.Clone(req.Context())
+	viewerURL := *req.URL
+	query := viewerURL.Query()
+	query.Del("api_key_id")
+	viewerURL.RawQuery = query.Encode()
+	viewerRequest.URL = &viewerURL
+	return parseUsageExportFilterQuery(viewerRequest, anchor)
 }
 
 func parseUsageFilterQueryWithLatestIdentity(req *http.Request, anchor time.Time, allowLatestIdentity bool) (servicedto.UsageFilter, error) {
