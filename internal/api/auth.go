@@ -536,9 +536,17 @@ func (h *authHandler) apiKeyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
+	revalidationRef := ""
+	if provider, ok := h.viewerKeyAuthenticator.(auth.ViewerPrincipalReferenceProvider); ok {
+		revalidationRef, err = provider.CreateViewerPrincipalReference(principal)
+		if err != nil {
+			writeInternalError(c, "create viewer revalidation reference failed", err)
+			return
+		}
+	}
 	h.loginAttempts.Reset(clientKey)
 	resolved := h.resolveSessionToken(c)
-	token, expiresAt, err := h.sessions.CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(principal, resolved.Source, sessionClientMetadata(c))
+	token, expiresAt, err := h.sessions.CreateAPIKeyViewerForPrincipalWithRevalidationRefAndSourceAndMetadata(principal, revalidationRef, resolved.Source, sessionClientMetadata(c))
 	if err != nil {
 		writeInternalError(c, "create api key viewer session failed", err)
 		return
@@ -583,6 +591,9 @@ func (h *authHandler) validateViewerSession(c *gin.Context, session auth.Session
 	}
 	if h.viewerValidationCache == nil {
 		h.viewerValidationCache = auth.NewViewerPrincipalValidationCache(h.config.ViewerKeyRevalidationTTL)
+	}
+	if referenceValidator, ok := h.viewerPrincipalValidator.(auth.ViewerPrincipalReferenceValidator); ok && strings.TrimSpace(session.ViewerRevalidationRef) != "" {
+		return h.viewerValidationCache.ValidateWithReference(c.Request.Context(), referenceValidator, principal, session.ViewerRevalidationRef) == nil
 	}
 	return h.viewerValidationCache.Validate(c.Request.Context(), h.viewerPrincipalValidator, principal) == nil
 }

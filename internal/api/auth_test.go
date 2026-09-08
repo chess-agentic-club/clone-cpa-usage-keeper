@@ -3,10 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +21,8 @@ import (
 	repositorydto "cpa-usage-keeper/internal/repository/dto"
 	servicedto "cpa-usage-keeper/internal/service/dto"
 	"github.com/sirupsen/logrus"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 type authCPAAPIKeyStub struct {
@@ -246,6 +251,117 @@ func TestLiteLLMViewerLoginScopeRevocationAndCredentialIsolation(t *testing.T) {
 	}
 	if strings.Contains(string(storedSessions), rawKey) {
 		t.Fatalf("stored sessions leaked raw key: %s", storedSessions)
+	}
+}
+
+func TestLiteLLMViewerSessionSurvivesAuthenticatorRestart(t *testing.T) {
+	const (
+		rawKey         = "sk-restart-viewer-key"
+		canonicalToken = "token-restart"
+		masterKey      = "server-only-master-key"
+	)
+
+	liteLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/key/info" {
+			t.Errorf("unexpected LiteLLM request: %s %s", r.Method, r.URL.RequestURI())
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.URL.RawQuery == "" {
+			if r.Header.Get("Authorization") != "Bearer "+rawKey {
+				t.Errorf("login authorization = %q", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"info":{"token":"` + canonicalToken + `","key_alias":"Engineering","blocked":false}}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+masterKey || r.URL.Query().Get("key") == "" {
+			t.Errorf("revalidation request did not use master authentication: authorization=%q query=%q", r.Header.Get("Authorization"), r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"key":"` + r.URL.Query().Get("key") + `","info":{"blocked":false}}`))
+	}))
+	defer liteLLM.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "auth-sessions.db")
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open initial session database: %v", err)
+	}
+	if err := db.AutoMigrate(&entities.AuthSession{}); err != nil {
+		t.Fatalf("migrate initial session database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("load initial session database: %v", err)
+	}
+
+	config := AuthConfig{
+		Enabled:                  true,
+		LoginPassword:            "secret",
+		SessionTTL:               time.Hour,
+		ViewerKeyRevalidationTTL: time.Hour,
+	}
+	firstSessions := auth.NewPersistentSessionManager(time.Hour, auth.NewGormSessionStore(db))
+	firstHandler := NewAuthHandler(config, firstSessions)
+	firstAdapter := poller.NewLiteLLMViewerKeyAuthenticator(liteLLM.URL, masterKey, time.Second)
+	firstHandler.SetViewerKeyAuthenticator(firstAdapter, firstAdapter)
+	firstRouter := NewRouter(nil, nil, nil, nil, config, firstHandler, "", OptionalProviders{
+		Status: StatusRouteConfig{UsageSource: "litellm", Capabilities: SourceCapabilitiesForUsageSource("litellm")},
+	})
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"`+rawKey+`"}`))
+	loginReq.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	loginReq.Header.Set("Content-Type", "application/json")
+	firstRouter.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusNoContent {
+		t.Fatalf("unexpected login response: %d %s", loginResp.Code, loginResp.Body.String())
+	}
+	cookies := loginResp.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected one viewer session cookie, got %+v", cookies)
+	}
+	if _, ok := firstSessions.Get(cookies[0].Value); !ok {
+		t.Fatal("expected viewer session to be persisted before restart")
+	}
+	var persisted entities.AuthSession
+	if err := db.Where("token_hash = ?", auth.SessionTokenHash(cookies[0].Value)).First(&persisted).Error; err != nil {
+		t.Fatalf("load persisted viewer session: %v", err)
+	}
+	canonicalHash := sha256.Sum256([]byte(canonicalToken))
+	for _, secret := range []string{rawKey, canonicalToken, hex.EncodeToString(canonicalHash[:])} {
+		if persisted.ViewerRevalidationRef == "" || strings.Contains(persisted.ViewerRevalidationRef, secret) {
+			t.Fatalf("persisted viewer revalidation reference exposed credential material: %q", persisted.ViewerRevalidationRef)
+		}
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close initial session database: %v", err)
+	}
+
+	restartedDB, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open restarted session database: %v", err)
+	}
+	restartedSQLDB, err := restartedDB.DB()
+	if err != nil {
+		t.Fatalf("load restarted session database: %v", err)
+	}
+	t.Cleanup(func() { _ = restartedSQLDB.Close() })
+	restartedSessions := auth.NewPersistentSessionManager(time.Hour, auth.NewGormSessionStore(restartedDB))
+	restartedHandler := NewAuthHandler(config, restartedSessions)
+	restartedAdapter := poller.NewLiteLLMViewerKeyAuthenticator(liteLLM.URL, masterKey, time.Second)
+	restartedHandler.SetViewerKeyAuthenticator(restartedAdapter, restartedAdapter)
+	restartedRouter := NewRouter(nil, nil, nil, nil, config, restartedHandler, "", OptionalProviders{
+		Status: StatusRouteConfig{UsageSource: "litellm", Capabilities: SourceCapabilitiesForUsageSource("litellm")},
+	})
+
+	sessionResp := httptest.NewRecorder()
+	sessionReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	sessionReq.AddCookie(cookies[0])
+	restartedRouter.ServeHTTP(sessionResp, sessionReq)
+	if sessionResp.Code != http.StatusOK || !contains(sessionResp.Body.String(), `"authenticated":true`) {
+		t.Fatalf("persisted viewer session did not survive authenticator restart: %d %s", sessionResp.Code, sessionResp.Body.String())
 	}
 }
 

@@ -29,6 +29,19 @@ type ViewerPrincipalValidator interface {
 	ValidateViewerPrincipal(context.Context, ViewerPrincipal) error
 }
 
+// ViewerPrincipalReferenceProvider creates a durable, server-only reference
+// that allows a source-owned principal to be revalidated after a restart.
+// Implementations must not return raw credentials or plaintext provider IDs.
+type ViewerPrincipalReferenceProvider interface {
+	CreateViewerPrincipalReference(ViewerPrincipal) (string, error)
+}
+
+// ViewerPrincipalReferenceValidator validates a persisted server-only
+// reference for a source-owned principal.
+type ViewerPrincipalReferenceValidator interface {
+	ValidateViewerPrincipalWithReference(context.Context, ViewerPrincipal, string) error
+}
+
 // ViewerPrincipalResolver converts a persisted source-owned principal into
 // the canonical analytics group identity used by trusted server queries.
 type ViewerPrincipalResolver interface {
@@ -48,12 +61,13 @@ func NormalizeViewerPrincipal(principal ViewerPrincipal) (ViewerPrincipal, error
 }
 
 type viewerPrincipalCacheKey struct {
-	sourceSystem string
-	apiGroupKey  string
+	sourceSystem    string
+	apiGroupKey     string
+	revalidationRef string
 }
 
-// ViewerPrincipalValidationCache caches only successful validation of the
-// non-secret source and canonical group identity.
+// ViewerPrincipalValidationCache caches only successful viewer-principal
+// validation. Reference-aware entries are bound to their persisted reference.
 type ViewerPrincipalValidationCache struct {
 	mu       sync.Mutex
 	ttl      time.Duration
@@ -83,9 +97,34 @@ func (c *ViewerPrincipalValidationCache) Validate(ctx context.Context, validator
 		return ErrViewerPrincipalUnavailable
 	}
 
-	key := viewerPrincipalCacheKey{sourceSystem: principal.SourceSystem, apiGroupKey: principal.APIGroupKey}
-	if c == nil || c.ttl <= 0 {
+	return c.validate(ctx, viewerPrincipalCacheKey{sourceSystem: principal.SourceSystem, apiGroupKey: principal.APIGroupKey}, func() error {
 		return validator.ValidateViewerPrincipal(ctx, principal)
+	})
+}
+
+// ValidateWithReference is the cache-aware counterpart for validators that
+// can use a durable server-only revalidation reference.
+func (c *ViewerPrincipalValidationCache) ValidateWithReference(ctx context.Context, validator ViewerPrincipalReferenceValidator, principal ViewerPrincipal, reference string) error {
+	principal, err := NormalizeViewerPrincipal(principal)
+	if err != nil {
+		return err
+	}
+	reference = strings.TrimSpace(reference)
+	if validator == nil || reference == "" {
+		return ErrViewerPrincipalUnavailable
+	}
+	return c.validate(ctx, viewerPrincipalCacheKey{
+		sourceSystem:    principal.SourceSystem,
+		apiGroupKey:     principal.APIGroupKey,
+		revalidationRef: strings.TrimSpace(reference),
+	}, func() error {
+		return validator.ValidateViewerPrincipalWithReference(ctx, principal, reference)
+	})
+}
+
+func (c *ViewerPrincipalValidationCache) validate(ctx context.Context, key viewerPrincipalCacheKey, validate func() error) error {
+	if c == nil || c.ttl <= 0 {
+		return validate()
 	}
 
 	c.mu.Lock()
@@ -106,7 +145,7 @@ func (c *ViewerPrincipalValidationCache) Validate(ctx context.Context, validator
 	c.inFlight[key] = call
 	c.mu.Unlock()
 
-	call.err = validator.ValidateViewerPrincipal(ctx, principal)
+	call.err = validate()
 	c.mu.Lock()
 	if call.err == nil {
 		c.entries[key] = time.Now().Add(c.ttl)

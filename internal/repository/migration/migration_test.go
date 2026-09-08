@@ -92,6 +92,13 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260906_create_usage_api_key_identities",
 		"20260907_add_provider_cost_rollup_fields",
 		"20260907_add_auth_session_viewer_principal",
+		"20260908_create_identity_catalog",
+		"20260908_harden_identity_catalog",
+		"20260908_enforce_identity_catalog_invariants",
+		"20260908_purge_unsafe_identity_catalog_references",
+		"20260908_normalize_litellm_usage_groups",
+		"20260908_auth_session_external_identity",
+		"20260909_auth_session_viewer_revalidation_reference",
 	}
 	assertStringSlicesEqual(t, want, got)
 }
@@ -136,6 +143,9 @@ func TestOpenDatabaseRunsSchemaMigrationsAndAddsUsageEventRedisFields(t *testing
 	}
 	if !db.Migrator().HasColumn(&entities.AuthSession{}, "alias") {
 		t.Fatal("expected auth_sessions.alias column to exist")
+	}
+	if !db.Migrator().HasColumn(&entities.AuthSession{}, "viewer_revalidation_ref") {
+		t.Fatal("expected auth_sessions.viewer_revalidation_ref column to exist")
 	}
 	if !db.Migrator().HasTable(&entities.AppSetting{}) {
 		t.Fatal("expected app_settings table to exist")

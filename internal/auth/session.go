@@ -43,22 +43,23 @@ func (s *GormSessionStore) Save(token string, session Session) error {
 		return fmt.Errorf("auth session store is not configured")
 	}
 	row := entities.AuthSession{
-		TokenHash:          sessionTokenHash(token),
-		Role:               string(session.Role),
-		Source:             string(NormalizeSessionSource(session.Source)),
-		Alias:              session.Alias,
-		CPAAPIKeyID:        session.CPAAPIKeyID,
-		ViewerSourceSystem: session.ViewerSourceSystem,
-		ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
-		ViewerDisplayName:  session.ViewerDisplayName,
-		ExternalIdentityID: session.ExternalIdentityID,
-		LoginIP:            session.LoginIP,
-		LastSeenIP:         session.LastSeenIP,
-		UserAgent:          session.UserAgent,
-		LastSeenAt:         sessionTimePointer(session.LastSeenAt),
-		ExpiresAt:          session.ExpiresAt,
-		CreatedAt:          session.CreatedAt,
-		UpdatedAt:          session.CreatedAt,
+		TokenHash:             sessionTokenHash(token),
+		Role:                  string(session.Role),
+		Source:                string(NormalizeSessionSource(session.Source)),
+		Alias:                 session.Alias,
+		CPAAPIKeyID:           session.CPAAPIKeyID,
+		ViewerSourceSystem:    session.ViewerSourceSystem,
+		ViewerAPIGroupKey:     session.ViewerAPIGroupKey,
+		ViewerDisplayName:     session.ViewerDisplayName,
+		ViewerRevalidationRef: session.ViewerRevalidationRef,
+		ExternalIdentityID:    session.ExternalIdentityID,
+		LoginIP:               session.LoginIP,
+		LastSeenIP:            session.LastSeenIP,
+		UserAgent:             session.UserAgent,
+		LastSeenAt:            sessionTimePointer(session.LastSeenAt),
+		ExpiresAt:             session.ExpiresAt,
+		CreatedAt:             session.CreatedAt,
+		UpdatedAt:             session.CreatedAt,
 	}
 	return s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "token_hash"}},
@@ -185,7 +186,8 @@ func authSessionFromRow(row entities.AuthSession) (Session, error) {
 		return Session{
 			Role: RoleAPIKeyViewer, Source: source, CPAAPIKeyID: row.CPAAPIKeyID,
 			ViewerSourceSystem: row.ViewerSourceSystem, ViewerAPIGroupKey: row.ViewerAPIGroupKey, ViewerDisplayName: row.ViewerDisplayName,
-			LoginIP: row.LoginIP, LastSeenIP: row.LastSeenIP, UserAgent: row.UserAgent,
+			ViewerRevalidationRef: row.ViewerRevalidationRef,
+			LoginIP:               row.LoginIP, LastSeenIP: row.LastSeenIP, UserAgent: row.UserAgent,
 			LastSeenAt: lastSeenAt, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
 		}, nil
 	default:
@@ -255,20 +257,21 @@ func NormalizeSessionSource(source SessionSource) SessionSource {
 }
 
 type Session struct {
-	Role               Role
-	Source             SessionSource
-	Alias              string
-	CPAAPIKeyID        int64
-	ViewerSourceSystem string
-	ViewerAPIGroupKey  string
-	ViewerDisplayName  string
-	ExternalIdentityID string
-	LoginIP            string
-	LastSeenIP         string
-	UserAgent          string
-	LastSeenAt         time.Time
-	ExpiresAt          time.Time
-	CreatedAt          time.Time
+	Role                  Role
+	Source                SessionSource
+	Alias                 string
+	CPAAPIKeyID           int64
+	ViewerSourceSystem    string
+	ViewerAPIGroupKey     string
+	ViewerDisplayName     string
+	ViewerRevalidationRef string
+	ExternalIdentityID    string
+	LoginIP               string
+	LastSeenIP            string
+	UserAgent             string
+	LastSeenAt            time.Time
+	ExpiresAt             time.Time
+	CreatedAt             time.Time
 }
 
 type SessionRecord struct {
@@ -361,16 +364,24 @@ func (m *SessionManager) CreateAPIKeyViewerWithSourceAndMetadata(cpaAPIKeyID int
 // CreateAPIKeyViewerForPrincipalWithSourceAndMetadata persists a viewer
 // identity owned by an external source without retaining its raw credential.
 func (m *SessionManager) CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(principal ViewerPrincipal, source SessionSource, metadata SessionClientMetadata) (string, time.Time, error) {
+	return m.CreateAPIKeyViewerForPrincipalWithRevalidationRefAndSourceAndMetadata(principal, "", source, metadata)
+}
+
+// CreateAPIKeyViewerForPrincipalWithRevalidationRefAndSourceAndMetadata
+// persists a source-owned viewer identity and its server-only revalidation
+// reference without exposing either through session management records.
+func (m *SessionManager) CreateAPIKeyViewerForPrincipalWithRevalidationRefAndSourceAndMetadata(principal ViewerPrincipal, revalidationRef string, source SessionSource, metadata SessionClientMetadata) (string, time.Time, error) {
 	principal, err := NormalizeViewerPrincipal(principal)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	return m.create(Session{
-		Role:               RoleAPIKeyViewer,
-		Source:             NormalizeSessionSource(source),
-		ViewerSourceSystem: principal.SourceSystem,
-		ViewerAPIGroupKey:  principal.APIGroupKey,
-		ViewerDisplayName:  principal.DisplayName,
+		Role:                  RoleAPIKeyViewer,
+		Source:                NormalizeSessionSource(source),
+		ViewerSourceSystem:    principal.SourceSystem,
+		ViewerAPIGroupKey:     principal.APIGroupKey,
+		ViewerDisplayName:     principal.DisplayName,
+		ViewerRevalidationRef: strings.TrimSpace(revalidationRef),
 	}, metadata)
 }
 
