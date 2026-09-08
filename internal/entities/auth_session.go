@@ -12,6 +12,7 @@ type AuthSession struct {
 	ViewerSourceSystem string
 	ViewerAPIGroupKey  string
 	ViewerDisplayName  string
+	ExternalIdentityID string `gorm:"index:idx_auth_sessions_external_identity_id"`
 	LoginIP            string
 	LastSeenIP         string
 	UserAgent          string

@@ -110,7 +110,7 @@ func (h *authHandler) revokeManagedSession(c *gin.Context) {
 		return
 	}
 	if sessionID == currentAuthSessionHash(c) {
-		clearSessionCookie(c, h.config.BasePath, resolveSessionToken(c).CookieKind)
+		clearSessionCookie(c, h.config.BasePath, h.resolveSessionToken(c).CookieKind)
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -154,9 +154,7 @@ func buildAuthSessionItems(records []auth.SessionRecord, apiKeysByID map[int64]e
 		}
 		viewerDisplayName := strings.TrimSpace(record.ViewerDisplayName)
 		if viewerDisplayName != "" {
-			if viewerDisplayName == strings.TrimSpace(record.ViewerAPIGroupKey) {
-				viewerDisplayName = "API Key Viewer"
-			}
+			viewerDisplayName = sanitizedViewerDisplayName(record.ViewerSourceSystem, record.ViewerAPIGroupKey, viewerDisplayName)
 			base.Kind = authSessionKindAPIKey
 			base.Label = viewerDisplayName
 			base.DisplayKey = viewerDisplayName

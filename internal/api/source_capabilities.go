@@ -2,6 +2,11 @@ package api
 
 import "strings"
 
+const (
+	AuthModeStandalone  = "standalone"
+	AuthModeEmbeddedJWT = "embedded_jwt"
+)
+
 // SourceCapabilities describes which source-dependent dashboard features are
 // meaningful for the configured, deployment-time usage source.
 type SourceCapabilities struct {
@@ -38,6 +43,22 @@ func sourceCapabilitiesForStatus(config StatusRouteConfig) SourceCapabilities {
 		return SourceCapabilitiesForUsageSource(config.UsageSource)
 	}
 	return config.Capabilities
+}
+
+// SourceCapabilitiesForAuthMode removes standalone-only authentication
+// affordances from the public capability set in embedded deployments.
+func SourceCapabilitiesForAuthMode(capabilities SourceCapabilities, authMode string) SourceCapabilities {
+	if normalizeAuthMode(authMode) == AuthModeEmbeddedJWT {
+		capabilities.ViewerKeyLogin = false
+	}
+	return capabilities
+}
+
+func normalizeAuthMode(authMode string) string {
+	if strings.TrimSpace(authMode) == AuthModeEmbeddedJWT {
+		return AuthModeEmbeddedJWT
+	}
+	return AuthModeStandalone
 }
 
 // HasCPAIntegration identifies routes backed by CPA-only APIs. Both supported

@@ -104,6 +104,7 @@ const (
 	migrationEnforceIdentityCatalogInvariants     = "20260908_enforce_identity_catalog_invariants"
 	migrationPurgeUnsafeIdentityCatalogReferences = "20260908_purge_unsafe_identity_catalog_references"
 	migrationNormalizeLiteLLMUsageGroups          = "20260908_normalize_litellm_usage_groups"
+	migrationAddAuthSessionExternalIdentity       = "20260908_auth_session_external_identity"
 )
 
 type schemaMigration struct {
@@ -258,6 +259,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationEnforceIdentityCatalogInvariants, run: enforceIdentityCatalogInvariantsMigration},
 		{version: migrationPurgeUnsafeIdentityCatalogReferences, run: purgeUnsafeIdentityCatalogReferencesMigration},
 		{version: migrationNormalizeLiteLLMUsageGroups, run: normalizeLegacyLiteLLMUsageGroupsMigration},
+		{version: migrationAddAuthSessionExternalIdentity, run: addAuthSessionExternalIdentityMigration},
 	}
 }
 

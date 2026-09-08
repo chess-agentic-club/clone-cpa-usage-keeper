@@ -32,7 +32,7 @@ func TestLiteLLMViewerAuthenticatesVirtualKeyFromKeyInfo(t *testing.T) {
 	}))
 	defer server.Close()
 
-	principal, err := NewLiteLLMViewerKeyAuthenticator(server.URL, time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
+	principal, err := NewLiteLLMViewerKeyAuthenticator(server.URL, "master-key", time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
 	if err != nil {
 		t.Fatalf("AuthenticateViewerKey returned error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestLiteLLMViewerAuthenticationRejectsInvalidKeyInfoWithoutLeakingSecret(t 
 			}))
 			defer server.Close()
 
-			_, err := NewLiteLLMViewerKeyAuthenticator(server.URL, time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
+			_, err := NewLiteLLMViewerKeyAuthenticator(server.URL, "master-key", time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
 			if !errors.Is(err, auth.ErrInvalidViewerCredentials) {
 				t.Fatalf("error = %v, want invalid viewer credentials", err)
 			}
@@ -100,7 +100,7 @@ func TestLiteLLMViewerAuthenticationRejectsRedirectWithoutFollowingIt(t *testing
 	}))
 	defer server.Close()
 
-	_, err := NewLiteLLMViewerKeyAuthenticator(server.URL, time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
+	_, err := NewLiteLLMViewerKeyAuthenticator(server.URL, "master-key", time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
 	if !errors.Is(err, auth.ErrInvalidViewerCredentials) {
 		t.Fatalf("error = %v, want invalid viewer credentials", err)
 	}
@@ -112,7 +112,7 @@ func TestLiteLLMViewerAuthenticationRejectsRedirectWithoutFollowingIt(t *testing
 }
 
 func TestLiteLLMViewerAuthenticationTransportErrorDoesNotLeakSecret(t *testing.T) {
-	_, err := NewLiteLLMViewerKeyAuthenticator("http://127.0.0.1:1", time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
+	_, err := NewLiteLLMViewerKeyAuthenticator("http://127.0.0.1:1", "master-key", time.Second).AuthenticateViewerKey(context.Background(), liteLLMVirtualKey)
 	if !errors.Is(err, auth.ErrInvalidViewerCredentials) {
 		t.Fatalf("error = %v, want invalid viewer credentials", err)
 	}
@@ -121,15 +121,15 @@ func TestLiteLLMViewerAuthenticationTransportErrorDoesNotLeakSecret(t *testing.T
 	}
 }
 
-func TestLiteLLMViewerValidatorAcceptsOnlyCanonicalLiteLLMPrincipal(t *testing.T) {
-	authenticator := NewLiteLLMViewerKeyAuthenticator("http://litellm.invalid", time.Second)
+func TestLiteLLMViewerValidatorRejectsUnknownOrMalformedPrincipal(t *testing.T) {
+	authenticator := NewLiteLLMViewerKeyAuthenticator("http://litellm.invalid", "master-key", time.Second)
 	ref, err := opaqueLiteLLMKeyRef("returned-token")
 	if err != nil {
 		t.Fatalf("opaqueLiteLLMKeyRef() error = %v", err)
 	}
 	valid := auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: liteLLMAPIGroupKeyFromRef(ref), DisplayName: "Engineering"}
-	if err := authenticator.ValidateViewerPrincipal(context.Background(), valid); err != nil {
-		t.Fatalf("ValidateViewerPrincipal returned error: %v", err)
+	if err := authenticator.ValidateViewerPrincipal(context.Background(), valid); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+		t.Fatalf("unknown-principal validation error = %v", err)
 	}
 	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "cliproxy", APIGroupKey: valid.APIGroupKey, DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
 		t.Fatalf("wrong-source validation error = %v", err)
@@ -141,5 +141,94 @@ func TestLiteLLMViewerValidatorAcceptsOnlyCanonicalLiteLLMPrincipal(t *testing.T
 		if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: apiGroupKey, DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
 			t.Fatalf("noncanonical API group key %q validation error = %v", apiGroupKey, err)
 		}
+	}
+}
+
+func TestLiteLLMViewerRevalidatesOpaquePrincipalWithServerMasterKey(t *testing.T) {
+	const (
+		rawKey    = "sk-private-viewer-key"
+		masterKey = "server-only-master-key"
+	)
+	canonical, err := canonicalLiteLLMKeyRef(rawKey)
+	if err != nil {
+		t.Fatalf("canonicalLiteLLMKeyRef returned error: %v", err)
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/key/info" {
+			t.Fatalf("request = %s %s, want GET /key/info", r.Method, r.URL.Path)
+		}
+		switch requests {
+		case 1:
+			if r.Header.Get("Authorization") != "Bearer "+rawKey || r.URL.RawQuery != "" {
+				t.Fatalf("login request used unexpected authentication or query")
+			}
+			_, _ = io.WriteString(w, `{"key":"`+rawKey+`","info":{"key_alias":"`+rawKey+`","blocked":false}}`)
+		case 2:
+			if r.Header.Get("Authorization") != "Bearer "+masterKey || r.URL.Query().Get("key") != canonical || len(r.URL.Query()) != 1 {
+				t.Fatalf("revalidation request did not use the server master key and canonical hash")
+			}
+			_, _ = io.WriteString(w, `{"key":"`+canonical+`","info":{"key_alias":"`+canonical+`","blocked":false}}`)
+		default:
+			t.Fatalf("unexpected request count %d", requests)
+		}
+	}))
+	defer server.Close()
+
+	authenticator := NewLiteLLMViewerKeyAuthenticatorWithMasterKey(server.URL, masterKey, time.Second)
+	principal, err := authenticator.AuthenticateViewerKey(context.Background(), rawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateViewerKey returned error: %v", err)
+	}
+	if principal.DisplayName != "LiteLLM key" || strings.Contains(principal.APIGroupKey, rawKey) || strings.Contains(principal.APIGroupKey, canonical) {
+		t.Fatal("principal retained a credential or unsafe alias")
+	}
+	if err := authenticator.ValidateViewerPrincipal(context.Background(), principal); err != nil {
+		t.Fatalf("ValidateViewerPrincipal returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("request count = %d, want login and revalidation", requests)
+	}
+}
+
+func TestLiteLLMViewerPrivilegedRevalidationRejectsRedirectAndLeaksNoCredential(t *testing.T) {
+	const (
+		rawKey    = "sk-private-viewer-key"
+		masterKey = "server-only-master-key"
+	)
+	redirected := make(chan struct{}, 1)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch {
+		case r.URL.Path == "/key/info" && requests == 1:
+			_, _ = io.WriteString(w, `{"key":"`+rawKey+`","info":{"key_alias":"Engineering","blocked":false}}`)
+		case r.URL.Path == "/key/info":
+			http.Redirect(w, r, "/redirected", http.StatusFound)
+		case r.URL.Path == "/redirected":
+			redirected <- struct{}{}
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	authenticator := NewLiteLLMViewerKeyAuthenticatorWithMasterKey(server.URL, masterKey, time.Second)
+	principal, err := authenticator.AuthenticateViewerKey(context.Background(), rawKey)
+	if err != nil {
+		t.Fatalf("AuthenticateViewerKey returned error: %v", err)
+	}
+	err = authenticator.ValidateViewerPrincipal(context.Background(), principal)
+	if !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+		t.Fatalf("revalidation error = %v, want unavailable", err)
+	}
+	if strings.Contains(err.Error(), rawKey) || strings.Contains(err.Error(), masterKey) {
+		t.Fatal("revalidation error leaked a credential")
+	}
+	select {
+	case <-redirected:
+		t.Fatal("privileged client followed redirect")
+	default:
 	}
 }

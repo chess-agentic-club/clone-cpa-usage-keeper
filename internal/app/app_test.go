@@ -263,6 +263,45 @@ func TestNewWithConfigLiteLLMGatesCPAOnlyCapabilitiesAndRoutes(t *testing.T) {
 	}
 }
 
+func TestNewWithConfigWiresEmbeddedJWTAuthModeAndRoutes(t *testing.T) {
+	cfg := testAppConfig(t)
+	cfg.AuthEnabled = true
+	cfg.AuthMode = config.AuthModeEmbeddedJWT
+	cfg.UsageSource = "litellm"
+	cfg.LiteLLMBaseURL = "https://litellm.example.com"
+	cfg.LiteLLMMasterKey = "server-only-master"
+	cfg.LiteLLMSyncInterval = 10 * time.Second
+	cfg.LiteLLMPageSize = 100
+	cfg.LiteLLMOverlap = 5 * time.Minute
+	cfg.JWTIssuer = "https://webui.example.com"
+	cfg.JWTAudience = "keeper"
+	cfg.JWKSURL = "https://webui.example.com/.well-known/jwks.json"
+	cfg.JWTAllowedAlgorithms = []string{"RS256"}
+	cfg.JWTRoleClaim = "role"
+	cfg.AuthSessionTTL = time.Hour
+	cfg.ViewerKeyRevalidationTTL = time.Minute
+
+	application, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig returned error: %v", err)
+	}
+	defer application.Close()
+
+	if !hasAppRoute(application.Router, http.MethodPost, "/api/v1/auth/sso/exchange") {
+		t.Fatal("embedded app did not expose SSO exchange")
+	}
+	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/api-key-login"} {
+		if hasAppRoute(application.Router, http.MethodPost, path) {
+			t.Fatalf("embedded app exposed standalone auth route %s", path)
+		}
+	}
+	response := httptest.NewRecorder()
+	application.Router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"auth_mode":"embedded_jwt"`) || strings.Contains(response.Body.String(), `"viewer_key_login":true`) {
+		t.Fatalf("unexpected embedded bootstrap: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestViewerKeyLoginCapabilityRequiresRegisteredSourceAdapter(t *testing.T) {
 	if capabilities := sourceCapabilitiesFor(config.Config{UsageSource: "litellm"}); !capabilities.ViewerKeyLogin {
 		t.Fatalf("registered LiteLLM adapter must advertise viewer-key login: %+v", capabilities)

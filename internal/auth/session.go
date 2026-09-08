@@ -51,6 +51,7 @@ func (s *GormSessionStore) Save(token string, session Session) error {
 		ViewerSourceSystem: session.ViewerSourceSystem,
 		ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
 		ViewerDisplayName:  session.ViewerDisplayName,
+		ExternalIdentityID: session.ExternalIdentityID,
 		LoginIP:            session.LoginIP,
 		LastSeenIP:         session.LastSeenIP,
 		UserAgent:          session.UserAgent,
@@ -168,8 +169,17 @@ func authSessionFromRow(row entities.AuthSession) (Session, error) {
 	switch Role(row.Role) {
 	case RoleAdmin:
 		return Session{
-			Role: RoleAdmin, Source: source, Alias: row.Alias, LoginIP: row.LoginIP, LastSeenIP: row.LastSeenIP,
+			Role: RoleAdmin, Source: source, Alias: row.Alias, ExternalIdentityID: row.ExternalIdentityID, LoginIP: row.LoginIP, LastSeenIP: row.LastSeenIP,
 			UserAgent: row.UserAgent, LastSeenAt: lastSeenAt, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
+		}, nil
+	case RoleUser:
+		if strings.TrimSpace(row.ExternalIdentityID) == "" {
+			return Session{}, fmt.Errorf("embedded user session is missing external identity")
+		}
+		return Session{
+			Role: RoleUser, Source: source, ExternalIdentityID: row.ExternalIdentityID,
+			LoginIP: row.LoginIP, LastSeenIP: row.LastSeenIP, UserAgent: row.UserAgent,
+			LastSeenAt: lastSeenAt, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
 		}, nil
 	case RoleAPIKeyViewer:
 		return Session{
@@ -197,6 +207,7 @@ func authSessionRecordFromRow(row entities.AuthSession) (SessionRecord, error) {
 		ViewerSourceSystem: session.ViewerSourceSystem,
 		ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
 		ViewerDisplayName:  session.ViewerDisplayName,
+		ExternalIdentityID: session.ExternalIdentityID,
 		LoginIP:            session.LoginIP,
 		LastSeenIP:         session.LastSeenIP,
 		UserAgent:          session.UserAgent,
@@ -219,7 +230,14 @@ type Role string
 
 const (
 	RoleAdmin        Role = "admin"
+	RoleUser         Role = "user"
 	RoleAPIKeyViewer Role = "api_key_viewer"
+)
+
+var (
+	ErrInvalidSessionRole       = errors.New("invalid session role")
+	ErrInvalidExternalIdentity  = errors.New("invalid external identity")
+	ErrExpiredIdentityAssertion = errors.New("identity assertion has expired")
 )
 
 type SessionSource string
@@ -244,6 +262,7 @@ type Session struct {
 	ViewerSourceSystem string
 	ViewerAPIGroupKey  string
 	ViewerDisplayName  string
+	ExternalIdentityID string
 	LoginIP            string
 	LastSeenIP         string
 	UserAgent          string
@@ -261,6 +280,7 @@ type SessionRecord struct {
 	ViewerSourceSystem string
 	ViewerAPIGroupKey  string
 	ViewerDisplayName  string
+	ExternalIdentityID string
 	LoginIP            string
 	LastSeenIP         string
 	UserAgent          string
@@ -354,7 +374,25 @@ func (m *SessionManager) CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(pri
 	}, metadata)
 }
 
+// CreateEmbedded creates a session from an already verified external
+// assertion. The local TTL can shorten, but never extend, the assertion's
+// verified lifetime.
+func (m *SessionManager) CreateEmbedded(identityID string, role Role, assertionExpiry time.Time, source SessionSource, metadata SessionClientMetadata) (string, time.Time, error) {
+	identityID = strings.TrimSpace(identityID)
+	if identityID == "" || assertionExpiry.IsZero() {
+		return "", time.Time{}, ErrInvalidExternalIdentity
+	}
+	if role != RoleAdmin && role != RoleUser {
+		return "", time.Time{}, ErrInvalidSessionRole
+	}
+	return m.createUntil(Session{Role: role, Source: NormalizeSessionSource(source), ExternalIdentityID: identityID}, metadata, assertionExpiry)
+}
+
 func (m *SessionManager) create(session Session, metadata SessionClientMetadata) (string, time.Time, error) {
+	return m.createUntil(session, metadata, time.Time{})
+}
+
+func (m *SessionManager) createUntil(session Session, metadata SessionClientMetadata, upperBound time.Time) (string, time.Time, error) {
 	token, err := m.generate()
 	if err != nil {
 		return "", time.Time{}, err
@@ -366,6 +404,12 @@ func (m *SessionManager) create(session Session, metadata SessionClientMetadata)
 	m.cleanupExpiredLocked()
 	now := m.now()
 	expiresAt := now.Add(m.ttl)
+	if !upperBound.IsZero() && upperBound.Before(expiresAt) {
+		expiresAt = upperBound
+	}
+	if !upperBound.IsZero() && !expiresAt.After(now) {
+		return "", time.Time{}, ErrExpiredIdentityAssertion
+	}
 	metadata = normalizeSessionClientMetadata(metadata)
 	session.Source = NormalizeSessionSource(session.Source)
 	session.LoginIP = metadata.IP
@@ -514,6 +558,7 @@ func (m *SessionManager) List() []SessionRecord {
 			ViewerSourceSystem: session.ViewerSourceSystem,
 			ViewerAPIGroupKey:  session.ViewerAPIGroupKey,
 			ViewerDisplayName:  session.ViewerDisplayName,
+			ExternalIdentityID: session.ExternalIdentityID,
 			LoginIP:            session.LoginIP,
 			LastSeenIP:         session.LastSeenIP,
 			UserAgent:          session.UserAgent,

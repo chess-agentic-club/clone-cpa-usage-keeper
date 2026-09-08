@@ -37,23 +37,6 @@ type authViewerKeyAdapterStub struct {
 	validationCalls int
 }
 
-type revalidatingLiteLLMTestAdapter struct {
-	authenticator *poller.LiteLLMViewerKeyAuthenticator
-}
-
-func (a *revalidatingLiteLLMTestAdapter) AuthenticateViewerKey(ctx context.Context, rawKey string) (auth.ViewerPrincipal, error) {
-	return a.authenticator.AuthenticateViewerKey(ctx, rawKey)
-}
-
-func (a *revalidatingLiteLLMTestAdapter) ValidateViewerPrincipal(ctx context.Context, principal auth.ViewerPrincipal) error {
-	token := strings.TrimPrefix(principal.APIGroupKey, "litellm:")
-	resolved, err := a.authenticator.AuthenticateViewerKey(ctx, token)
-	if err != nil || resolved.SourceSystem != principal.SourceSystem || resolved.APIGroupKey != principal.APIGroupKey {
-		return auth.ErrViewerPrincipalUnavailable
-	}
-	return nil
-}
-
 type seededViewerUsageProvider struct {
 	usageFilterStub
 	requestCounts map[string]int64
@@ -164,17 +147,21 @@ func TestLiteLLMViewerLoginScopeRevocationAndCredentialIsolation(t *testing.T) {
 	const (
 		rawKey         = "sk-virtual-secret"
 		canonicalToken = "token-engineering"
-		canonicalGroup = "litellm:" + canonicalToken
+		masterKey      = "server-only-master-key"
 	)
 	blocked := false
 	liteLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/key/info" || r.URL.RawQuery != "" {
+		if r.Method != http.MethodGet || r.URL.Path != "/key/info" {
 			t.Errorf("unexpected LiteLLM request: %s %s", r.Method, r.URL.RequestURI())
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		authorization := r.Header.Get("Authorization")
-		if authorization != "Bearer "+rawKey && authorization != "Bearer "+canonicalToken {
+		if r.URL.RawQuery == "" && authorization != "Bearer "+rawKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.RawQuery != "" && (authorization != "Bearer "+masterKey || r.URL.Query().Get("key") == "") {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -191,12 +178,9 @@ func TestLiteLLMViewerLoginScopeRevocationAndCredentialIsolation(t *testing.T) {
 		ViewerKeyRevalidationTTL: time.Millisecond,
 	}
 	handler := NewAuthHandler(config, sessions)
-	adapter := &revalidatingLiteLLMTestAdapter{authenticator: poller.NewLiteLLMViewerKeyAuthenticator(liteLLM.URL, time.Second)}
+	adapter := poller.NewLiteLLMViewerKeyAuthenticator(liteLLM.URL, masterKey, time.Second)
 	handler.SetViewerKeyAuthenticator(adapter, adapter)
-	usage := &seededViewerUsageProvider{requestCounts: map[string]int64{
-		canonicalGroup:  1,
-		"litellm:other": 99,
-	}}
+	usage := &seededViewerUsageProvider{requestCounts: map[string]int64{"litellm:other": 99}}
 	router := NewRouter(nil, nil, usage, nil, config, handler, "", OptionalProviders{
 		Status: StatusRouteConfig{UsageSource: "litellm", Capabilities: SourceCapabilitiesForUsageSource("litellm")},
 	})
@@ -213,6 +197,12 @@ func TestLiteLLMViewerLoginScopeRevocationAndCredentialIsolation(t *testing.T) {
 	if len(cookies) != 1 {
 		t.Fatalf("expected viewer session cookie, got %+v", cookies)
 	}
+	stored, ok := sessions.Get(cookies[0].Value)
+	if !ok || stored.ViewerAPIGroupKey == "" {
+		t.Fatalf("expected opaque viewer principal session, got %+v found=%v", stored, ok)
+	}
+	canonicalGroup := stored.ViewerAPIGroupKey
+	usage.requestCounts[canonicalGroup] = 1
 
 	sessionResp := httptest.NewRecorder()
 	sessionReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)

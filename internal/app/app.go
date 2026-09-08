@@ -334,6 +334,8 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	}
 	authConfig := api.AuthConfig{
 		Enabled:                         cfg.AuthEnabled,
+		AuthMode:                        cfg.AuthMode,
+		UsageSource:                     cfg.UsageSource,
 		LoginPassword:                   cfg.LoginPassword,
 		SessionTTL:                      cfg.AuthSessionTTL,
 		BasePath:                        cfg.AppBasePath,
@@ -343,16 +345,30 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		ViewerKeyRevalidationTTL:        cfg.ViewerKeyRevalidationTTL,
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
-	capabilities := sourceCapabilitiesFor(cfg)
+	capabilities := api.SourceCapabilitiesForAuthMode(sourceCapabilitiesFor(cfg), cfg.AuthMode)
+	catalog := repository.NewCatalogRepository(db)
+	accessResolvers := make(map[string]service.SourceUsageKeyResolver, 1)
 	switch cfg.UsageSource {
 	case "cliproxy":
 		viewerAdapter := service.NewCPAAPIKeyViewerAdapter(cpaAPIKeyService)
 		authHandler.SetViewerKeyAuthenticator(viewerAdapter, viewerAdapter)
+		accessResolvers["cliproxy"] = service.CLIProxyUsageKeyResolver{DB: db}
 	case "litellm":
-		// Viewer authentication uses the submitted virtual key only; the
-		// ingestion master key must never be supplied to this adapter.
-		viewerAdapter := poller.NewLiteLLMViewerKeyAuthenticator(cfg.LiteLLMBaseURL, cfg.RequestTimeout)
+		// The master key remains server-only and is used solely to revalidate
+		// the opaque viewer principal after its successful-validation cache.
+		viewerAdapter := poller.NewLiteLLMViewerKeyAuthenticatorWithMasterKey(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, cfg.RequestTimeout)
 		authHandler.SetViewerKeyAuthenticator(viewerAdapter, viewerAdapter)
+		accessResolvers["litellm"] = poller.LiteLLMUsageKeyResolver{}
+	}
+	if cfg.AuthMode == config.AuthModeEmbeddedJWT {
+		authHandler.SetEmbeddedAuth(auth.NewJWTVerifier(auth.JWTVerifierConfig{
+			Issuer:             cfg.JWTIssuer,
+			Audience:           cfg.JWTAudience,
+			JWKSURL:            cfg.JWKSURL,
+			AllowedAlgorithms:  cfg.JWTAllowedAlgorithms,
+			RoleClaim:          cfg.JWTRoleClaim,
+			JWKSRequestTimeout: cfg.RequestTimeout,
+		}), service.NewIdentityAccessService(catalog, accessResolvers), catalog)
 	}
 	optionalProviders := api.OptionalProviders{
 		UsageIdentity:         usageIdentityService,
@@ -411,7 +427,6 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 			optionalProviders,
 		),
 	}
-	catalog := repository.NewCatalogRepository(db)
 	if cfg.UsageSource == "litellm" {
 		application.CatalogSync = poller.NewLiteLLMCatalogRunner(
 			poller.NewLiteLLMClient(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, cfg.RequestTimeout),

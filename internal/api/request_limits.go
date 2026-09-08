@@ -18,8 +18,9 @@ func unauthenticatedLoginRequestLimits(basePath string) gin.HandlerFunc {
 	prefix := strings.TrimSuffix(basePath, "/") + "/api/v1/auth/"
 	loginPath := prefix + "login"
 	apiKeyLoginPath := prefix + "api-key-login"
+	ssoExchangePath := prefix + "sso/exchange"
 	return func(c *gin.Context) {
-		if c.Request.Method != http.MethodPost || (c.Request.URL.Path != loginPath && c.Request.URL.Path != apiKeyLoginPath) {
+		if c.Request.Method != http.MethodPost || (c.Request.URL.Path != loginPath && c.Request.URL.Path != apiKeyLoginPath && c.Request.URL.Path != ssoExchangePath) {
 			c.Next()
 			return
 		}
@@ -27,9 +28,13 @@ func unauthenticatedLoginRequestLimits(basePath string) gin.HandlerFunc {
 		// 匿名登录入口先建立读取期限，保证后续校验提前返回或关闭 body 时仍有时间上限。
 		controller := http.NewResponseController(c.Writer)
 		deadlineSet := controller.SetReadDeadline(time.Now().Add(unauthenticatedLoginReadTimeout)) == nil
+		redactBody := c.Request.URL.Path == ssoExchangePath
 		defer func() {
 			if c.Request.Body != nil {
 				_ = c.Request.Body.Close()
+			}
+			if redactBody {
+				redactExchangeRequest(c.Request)
 			}
 			if deadlineSet {
 				_ = controller.SetReadDeadline(time.Time{})

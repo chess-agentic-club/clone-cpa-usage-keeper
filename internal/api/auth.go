@@ -1,9 +1,15 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"io"
+	"mime"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +46,8 @@ const (
 
 type AuthConfig struct {
 	Enabled                         bool
+	AuthMode                        string
+	UsageSource                     string
 	LoginPassword                   string
 	SessionTTL                      time.Duration
 	BasePath                        string
@@ -59,6 +67,15 @@ type authHandler struct {
 	viewerPrincipalResolver  auth.ViewerPrincipalResolver
 	viewerValidationCache    *auth.ViewerPrincipalValidationCache
 	loginAttempts            *auth.LoginAttemptLimiter
+	embeddedVerifier         auth.EmbeddedIdentityVerifier
+	usageAccess              service.UsageAccessProvider
+	catalogState             CatalogStateProvider
+}
+
+// CatalogStateProvider exposes only the last committed source-catalog state.
+// A missing or unreadable state fails SSO exchange closed.
+type CatalogStateProvider interface {
+	CatalogSyncState(context.Context, string) (entities.SourceCatalogSyncState, error)
 }
 
 type loginRequest struct {
@@ -74,6 +91,7 @@ type sessionResponse struct {
 	Role          auth.Role              `json:"role,omitempty"`
 	APIKey        *sessionAPIKeyResponse `json:"api_key,omitempty"`
 	Capabilities  SourceCapabilities     `json:"capabilities"`
+	AuthMode      string                 `json:"auth_mode"`
 }
 
 type sessionAPIKeyResponse struct {
@@ -108,6 +126,7 @@ type resolvedSessionToken struct {
 }
 
 func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandler {
+	config.AuthMode = normalizeAuthMode(config.AuthMode)
 	return &authHandler{
 		config:                config,
 		sessions:              sessions,
@@ -119,6 +138,17 @@ func NewAuthHandler(config AuthConfig, sessions *auth.SessionManager) *authHandl
 			MaxSources:     loginAttemptSourceMax,
 		}),
 	}
+}
+
+// SetEmbeddedAuth configures the verified-identity exchange boundary. Raw
+// assertions are consumed only by the verifier and are never retained here.
+func (h *authHandler) SetEmbeddedAuth(verifier auth.EmbeddedIdentityVerifier, access service.UsageAccessProvider, catalogState CatalogStateProvider) {
+	if h == nil {
+		return
+	}
+	h.embeddedVerifier = verifier
+	h.usageAccess = access
+	h.catalogState = catalogState
 }
 
 func (h *authHandler) setCPAAPIKeyProvider(provider service.CPAAPIKeyProvider) {
@@ -143,11 +173,15 @@ func (h *authHandler) setViewerKeyAuthenticator(authenticator auth.ViewerKeyAuth
 }
 
 func (h *authHandler) registerRoutes(router gin.IRoutes, capabilities SourceCapabilities) {
-	h.capabilities = capabilities
+	h.capabilities = SourceCapabilitiesForAuthMode(capabilities, h.config.AuthMode)
 	router.GET("/session", h.getSession)
-	router.POST("/login", h.login)
-	if capabilities.ViewerKeyLogin {
-		router.POST("/api-key-login", h.apiKeyLogin)
+	if h.config.AuthMode == AuthModeEmbeddedJWT {
+		router.POST("/sso/exchange", h.ssoExchange)
+	} else {
+		router.POST("/login", h.login)
+		if h.capabilities.ViewerKeyLogin {
+			router.POST("/api-key-login", h.apiKeyLogin)
+		}
 	}
 	router.POST("/logout", h.logout)
 }
@@ -332,7 +366,7 @@ func sessionMatchesResolvedSource(session auth.Session, resolved resolvedSession
 }
 
 func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken, auth.Session, bool) {
-	for _, resolved := range resolveSessionTokenCandidates(c) {
+	for _, resolved := range h.resolveSessionTokenCandidates(c) {
 		if resolved.Token == "" {
 			continue
 		}
@@ -359,34 +393,34 @@ func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken,
 		}
 		return resolved, session, true
 	}
-	return resolveSessionToken(c), auth.Session{}, false
+	return h.resolveSessionToken(c), auth.Session{}, false
 }
 
 func (h *authHandler) getSession(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin, AuthMode: AuthModeStandalone})
 		return
 	}
 	if !h.config.Enabled {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin, Capabilities: h.capabilities})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin, Capabilities: h.capabilities, AuthMode: h.config.AuthMode})
 		return
 	}
 	if h.sessions == nil {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities, AuthMode: h.config.AuthMode})
 		return
 	}
 
 	resolved, session, ok := h.resolveValidSession(c)
 	if !ok {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities, AuthMode: h.config.AuthMode})
 		return
 	}
-	response := sessionResponse{Authenticated: true, Role: session.Role, Capabilities: h.capabilities}
+	response := sessionResponse{Authenticated: true, Role: session.Role, Capabilities: h.capabilities, AuthMode: h.config.AuthMode}
 	if session.Role == auth.RoleAPIKeyViewer {
 		if session.CPAAPIKeyID > 0 {
 			row, ok := h.activeViewerAPIKey(c, resolved, session)
 			if !ok {
-				c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities})
+				c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities, AuthMode: h.config.AuthMode})
 				return
 			}
 			response.APIKey = &sessionAPIKeyResponse{
@@ -396,12 +430,41 @@ func (h *authHandler) getSession(c *gin.Context) {
 			}
 		} else {
 			response.APIKey = &sessionAPIKeyResponse{
-				DisplayKey:          session.ViewerDisplayName,
+				DisplayKey:          sanitizedViewerDisplayName(session.ViewerSourceSystem, session.ViewerAPIGroupKey, session.ViewerDisplayName),
 				LocalRankingEnabled: h.config.APIKeyViewerLocalRankingEnabled,
 			}
 		}
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func sanitizedViewerDisplayName(sourceSystem, apiGroupKey, displayName string) string {
+	sourceSystem = strings.TrimSpace(sourceSystem)
+	apiGroupKey = strings.TrimSpace(apiGroupKey)
+	displayName = strings.TrimSpace(displayName)
+	fallback := "API Key Viewer"
+	if sourceSystem == "litellm" {
+		fallback = "LiteLLM key"
+	}
+	if displayName == "" || displayName == apiGroupKey {
+		return fallback
+	}
+	if sourceSystem == "litellm" && (strings.HasPrefix(strings.ToLower(displayName), "sk-") || strings.HasPrefix(strings.ToLower(displayName), "litellm:") || isHexCredential(displayName)) {
+		return fallback
+	}
+	return displayName
+}
+
+func isHexCredential(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F') || (character >= '0' && character <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *authHandler) login(c *gin.Context) {
@@ -435,7 +498,7 @@ func (h *authHandler) login(c *gin.Context) {
 	}
 	h.loginAttempts.Reset(clientKey)
 
-	resolved := resolveSessionToken(c)
+	resolved := h.resolveSessionToken(c)
 	token, expiresAt, err := h.sessions.CreateWithSourceAndMetadata(resolved.Source, sessionClientMetadata(c))
 	if err != nil {
 		writeInternalError(c, "create auth session failed", err)
@@ -474,7 +537,7 @@ func (h *authHandler) apiKeyLogin(c *gin.Context) {
 		return
 	}
 	h.loginAttempts.Reset(clientKey)
-	resolved := resolveSessionToken(c)
+	resolved := h.resolveSessionToken(c)
 	token, expiresAt, err := h.sessions.CreateAPIKeyViewerForPrincipalWithSourceAndMetadata(principal, resolved.Source, sessionClientMetadata(c))
 	if err != nil {
 		writeInternalError(c, "create api key viewer session failed", err)
@@ -531,7 +594,7 @@ func (h *authHandler) logout(c *gin.Context) {
 	}
 	resolved, _, ok := h.resolveValidSession(c)
 	if !ok {
-		resolved = resolveSessionToken(c)
+		resolved = h.resolveSessionToken(c)
 	}
 	if h.sessions != nil {
 		h.deleteSession(resolved.Token)
@@ -592,17 +655,33 @@ func isCPAMCEmbedRequest(c *gin.Context) bool {
 }
 
 func resolveSessionToken(c *gin.Context) resolvedSessionToken {
-	if candidates := resolveSessionTokenCandidates(c); len(candidates) > 0 {
+	return resolveSessionTokenForMode(c, false)
+}
+
+func (h *authHandler) resolveSessionToken(c *gin.Context) resolvedSessionToken {
+	return resolveSessionTokenForMode(c, h != nil && h.config.AuthMode == AuthModeEmbeddedJWT)
+}
+
+func resolveSessionTokenForMode(c *gin.Context, forceEmbed bool) resolvedSessionToken {
+	if candidates := resolveSessionTokenCandidatesForMode(c, forceEmbed); len(candidates) > 0 {
 		return candidates[0]
 	}
-	if isCPAMCEmbedRequest(c) {
+	if forceEmbed || isCPAMCEmbedRequest(c) {
 		return resolvedSessionToken{CookieKind: sessionCookieKindEmbed, Source: auth.SessionSourceEmbed, Transport: sessionTokenTransportCookie}
 	}
 	return resolvedSessionToken{CookieKind: sessionCookieKindStandard, Source: auth.SessionSourceStandard, Transport: sessionTokenTransportCookie}
 }
 
 func resolveSessionTokenCandidates(c *gin.Context) []resolvedSessionToken {
-	if isCPAMCEmbedRequest(c) {
+	return resolveSessionTokenCandidatesForMode(c, false)
+}
+
+func (h *authHandler) resolveSessionTokenCandidates(c *gin.Context) []resolvedSessionToken {
+	return resolveSessionTokenCandidatesForMode(c, h != nil && h.config.AuthMode == AuthModeEmbeddedJWT)
+}
+
+func resolveSessionTokenCandidatesForMode(c *gin.Context, forceEmbed bool) []resolvedSessionToken {
+	if forceEmbed || isCPAMCEmbedRequest(c) {
 		var candidates []resolvedSessionToken
 		cookieToken, _ := c.Cookie(embedSessionCookieName)
 		if cookieToken != "" {
@@ -640,12 +719,130 @@ func requiresRequestIntent(method string) bool {
 
 func requestIntentMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if requiresRequestIntent(c.Request.Method) && c.GetHeader(requestIntentHeaderName) != requestIntentHeaderValueFetch {
+		isSSOExchange := c.Request.Method == http.MethodPost && strings.HasSuffix(c.Request.URL.Path, "/api/v1/auth/sso/exchange")
+		if requiresRequestIntent(c.Request.Method) && !isSSOExchange && c.GetHeader(requestIntentHeaderName) != requestIntentHeaderValueFetch {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "fetch request required"})
 			return
 		}
 		c.Next()
 	}
+}
+
+func (h *authHandler) ssoExchange(c *gin.Context) {
+	defer redactExchangeRequest(c.Request)
+	if h == nil || !h.config.Enabled || h.config.AuthMode != AuthModeEmbeddedJWT || h.sessions == nil || h.embeddedVerifier == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authentication_unavailable"})
+		return
+	}
+	assertion, formRequest, err := readSSOAssertion(c.Request)
+	if err != nil {
+		if isRequestEntityTooLarge(err) {
+			writeRequestEntityTooLarge(c)
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	principal, err := h.embeddedVerifier.Verify(c.Request.Context(), assertion)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_assertion"})
+		return
+	}
+	if !h.catalogReady(c.Request.Context()) || h.usageAccess == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "catalog_unavailable"})
+		return
+	}
+	accessPrincipal, err := h.usageAccess.ResolveIdentity(c.Request.Context(), principal, h.config.UsageSource)
+	if err != nil {
+		if errors.Is(err, service.ErrUsageScopeForbidden) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "mapping_required"})
+			return
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "catalog_unavailable"})
+		return
+	}
+	role := auth.RoleUser
+	if principal.IsAdministrator {
+		role = auth.RoleAdmin
+	}
+	token, expiresAt, err := h.sessions.CreateEmbedded(accessPrincipal.ExternalIdentityID, role, principal.AssertionExpiresAt, auth.SessionSourceEmbed, sessionClientMetadata(c))
+	if err != nil {
+		if errors.Is(err, auth.ErrExpiredIdentityAssertion) || errors.Is(err, auth.ErrInvalidExternalIdentity) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_assertion"})
+			return
+		}
+		writeInternalError(c, "create embedded auth session failed", err)
+		return
+	}
+	setSessionCookie(c, h.config.BasePath, sessionCookieKindEmbed, token, expiresAt)
+	if formRequest {
+		c.Redirect(http.StatusSeeOther, embeddedLandingPath(h.config.BasePath, role))
+		return
+	}
+	c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: role, Capabilities: h.capabilities, AuthMode: h.config.AuthMode})
+}
+
+func (h *authHandler) catalogReady(ctx context.Context) bool {
+	if h == nil || h.catalogState == nil || strings.TrimSpace(h.config.UsageSource) == "" {
+		return false
+	}
+	state, err := h.catalogState.CatalogSyncState(ctx, h.config.UsageSource)
+	return err == nil && !state.LastSuccessAt.IsZero()
+}
+
+func readSSOAssertion(request *http.Request) (string, bool, error) {
+	if request == nil || request.Body == nil {
+		return "", false, errors.New("missing request body")
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil {
+		return "", false, err
+	}
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() {
+		for index := range body {
+			body[index] = 0
+		}
+	}()
+	switch mediaType {
+	case "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil || len(values["assertion"]) != 1 || strings.TrimSpace(values.Get("assertion")) == "" {
+			return "", true, errors.New("invalid assertion form")
+		}
+		return values.Get("assertion"), true, nil
+	case "application/json":
+		var payload struct {
+			Assertion string `json:"assertion"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil || strings.TrimSpace(payload.Assertion) == "" {
+			return "", false, errors.New("invalid assertion JSON")
+		}
+		return payload.Assertion, false, nil
+	default:
+		return "", false, errors.New("unsupported content type")
+	}
+}
+
+func redactExchangeRequest(request *http.Request) {
+	if request == nil {
+		return
+	}
+	request.Body = http.NoBody
+	request.Form = nil
+	request.PostForm = nil
+}
+
+func embeddedLandingPath(basePath string, role auth.Role) string {
+	landing := "/analysis"
+	if role == auth.RoleUser {
+		landing = "/overview"
+	}
+	basePath = strings.TrimRight(basePath, "/")
+	return basePath + landing
 }
 
 func setSessionCookie(c *gin.Context, basePath string, kind sessionCookieKind, token string, expiresAt time.Time) {

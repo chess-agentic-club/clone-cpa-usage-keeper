@@ -118,7 +118,11 @@ func NewRouter(
 		localRankingProvider = optionalProviders[0].LocalRanking
 		statusConfig = optionalProviders[0].Status
 	}
-	capabilities := sourceCapabilitiesForStatus(statusConfig)
+	capabilities := SourceCapabilitiesForAuthMode(sourceCapabilitiesForStatus(statusConfig), authConfig.AuthMode)
+	statusConfig.Capabilities = capabilities
+	if authHandler.config.UsageSource == "" {
+		authHandler.config.UsageSource = statusConfig.UsageSource
+	}
 	authHandler.setCPAAPIKeyProvider(cpaAPIKeyProvider)
 	if capabilities.HasCPAIntegration() && authHandler.viewerKeyAuthenticator == nil {
 		viewerAdapter := service.NewCPAAPIKeyViewerAdapter(cpaAPIKeyProvider)
@@ -132,7 +136,7 @@ func NewRouter(
 	}
 
 	versionProtected := apiV1.Group("")
-	versionProtected.Use(authHandler.roleMiddleware(auth.RoleAdmin, auth.RoleAPIKeyViewer))
+	versionProtected.Use(authHandler.roleMiddleware(auth.RoleAdmin, auth.RoleUser, auth.RoleAPIKeyViewer))
 	registerVersionRoutes(versionProtected)
 
 	adminProtected := apiV1.Group("")

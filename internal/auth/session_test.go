@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,6 +10,66 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestSessionManagerCreateEmbeddedCapsExpiryAndValidatesRole(t *testing.T) {
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	manager := NewSessionManager(2 * time.Hour)
+	manager.now = func() time.Time { return now }
+	manager.generate = func() (string, error) { return "embedded-token", nil }
+
+	token, expiresAt, err := manager.CreateEmbedded("identity-1", RoleUser, now.Add(30*time.Minute), SessionSourceEmbed, SessionClientMetadata{IP: "198.51.100.8", UserAgent: "test-agent"})
+	if err != nil {
+		t.Fatalf("CreateEmbedded returned error: %v", err)
+	}
+	if token != "embedded-token" || !expiresAt.Equal(now.Add(30*time.Minute)) {
+		t.Fatalf("embedded session = %q, %s; want assertion-bounded expiry", token, expiresAt)
+	}
+	session, ok := manager.Get(token)
+	if !ok || session.Role != RoleUser || session.Source != SessionSourceEmbed || session.ExternalIdentityID != "identity-1" {
+		t.Fatalf("unexpected embedded session: %+v, found=%v", session, ok)
+	}
+	if session.LoginIP != "198.51.100.8" || session.UserAgent != "test-agent" {
+		t.Fatalf("embedded session lost client metadata: %+v", session)
+	}
+
+	if _, _, err := manager.CreateEmbedded("identity-1", RoleAPIKeyViewer, now.Add(time.Hour), SessionSourceEmbed, SessionClientMetadata{}); !errors.Is(err, ErrInvalidSessionRole) {
+		t.Fatalf("invalid embedded role error = %v, want ErrInvalidSessionRole", err)
+	}
+	if _, _, err := manager.CreateEmbedded("identity-1", RoleUser, now, SessionSourceEmbed, SessionClientMetadata{}); err == nil {
+		t.Fatal("expected an already-expired assertion to be rejected")
+	}
+	if _, _, err := manager.CreateEmbedded("identity-1", RoleUser, time.Time{}, SessionSourceEmbed, SessionClientMetadata{}); err == nil {
+		t.Fatal("expected a missing assertion expiry to be rejected")
+	}
+}
+
+func TestPersistentSessionManagerReloadsEmbeddedExternalIdentity(t *testing.T) {
+	db := openSessionStoreTestDatabase(t)
+	store := NewGormSessionStore(db)
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	manager := NewPersistentSessionManager(2*time.Hour, store)
+	manager.now = func() time.Time { return now }
+	manager.generate = func() (string, error) { return "persisted-embedded-token", nil }
+
+	token, expiresAt, err := manager.CreateEmbedded("identity-persisted", RoleAdmin, now.Add(time.Hour), SessionSourceEmbed, SessionClientMetadata{})
+	if err != nil {
+		t.Fatalf("CreateEmbedded returned error: %v", err)
+	}
+	var row entities.AuthSession
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("load persisted embedded session: %v", err)
+	}
+	if row.ExternalIdentityID != "identity-persisted" || row.TokenHash == token {
+		t.Fatalf("unsafe or incomplete persisted embedded session: %+v", row)
+	}
+
+	restarted := NewPersistentSessionManager(2*time.Hour, store)
+	restarted.now = func() time.Time { return now.Add(time.Minute) }
+	session, ok := restarted.Get(token)
+	if !ok || session.Role != RoleAdmin || session.ExternalIdentityID != "identity-persisted" || !session.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("reloaded embedded session = %+v, found=%v", session, ok)
+	}
+}
 
 func TestSessionManagerCreateValidateDelete(t *testing.T) {
 	manager := NewSessionManager(2 * time.Hour)
