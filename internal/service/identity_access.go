@@ -27,14 +27,24 @@ type ScopeSelection struct {
 }
 
 // AccessPrincipal is the server-side outcome of authenticating an external
-// identity for one source. A non-administrator has exactly one linked source
-// user before a scope can be resolved.
+// identity for one source. Its exported fields are compatibility projections
+// only; policy reads the private grant minted by ResolveIdentity so callers
+// cannot change authorization by mutating a returned value.
 type AccessPrincipal struct {
 	ExternalIdentityID string
 	SourceSystem       string
 	SourceUserID       string
 	IsAdministrator    bool
-	authorized         bool
+	grant              *accessPrincipalGrant
+}
+
+// accessPrincipalGrant is immutable after ResolveIdentity creates it. It is
+// deliberately not exported or accepted as input from browser-facing code.
+type accessPrincipalGrant struct {
+	externalIdentityID string
+	sourceSystem       string
+	sourceUserID       string
+	isAdministrator    bool
 }
 
 // SourceUsageKeyResolver turns source-safe catalog references into the exact
@@ -76,9 +86,8 @@ func (s *IdentityAccessService) ResolveIdentity(ctx context.Context, principal a
 	if err != nil {
 		return AccessPrincipal{}, ErrUsageScopeUnavailable
 	}
-	access := AccessPrincipal{ExternalIdentityID: identity.ID, SourceSystem: sourceSystem, IsAdministrator: principal.IsAdministrator, authorized: true}
-	if access.IsAdministrator {
-		return access, nil
+	if principal.IsAdministrator {
+		return newAccessPrincipal(identity.ID, sourceSystem, "", true), nil
 	}
 
 	link, found, err := s.catalog.FindIdentityLink(ctx, identity.ID, sourceSystem)
@@ -87,8 +96,7 @@ func (s *IdentityAccessService) ResolveIdentity(ctx context.Context, principal a
 	}
 	if found {
 		if s.isActiveSourceUser(ctx, sourceSystem, link.SourceUserID) {
-			access.SourceUserID = link.SourceUserID
-			return access, nil
+			return newAccessPrincipal(identity.ID, sourceSystem, link.SourceUserID, false), nil
 		}
 		return AccessPrincipal{}, ErrUsageScopeForbidden
 	}
@@ -106,12 +114,12 @@ func (s *IdentityAccessService) ResolveIdentity(ctx context.Context, principal a
 	if err := s.catalog.ReplaceIdentityLink(ctx, identity.ID, sourceSystem, users[0].ID, "email", false); err != nil {
 		return AccessPrincipal{}, ErrUsageScopeUnavailable
 	}
-	access.SourceUserID = users[0].ID
-	return access, nil
+	return newAccessPrincipal(identity.ID, sourceSystem, users[0].ID, false), nil
 }
 
 func (s *IdentityAccessService) ResolveScope(ctx context.Context, principal AccessPrincipal, selection ScopeSelection) (servicedto.UsageScope, error) {
-	if !s.acceptsPrincipal(principal) || (strings.TrimSpace(selection.UserCatalogID) != "" && strings.TrimSpace(selection.KeyCatalogID) != "") {
+	principal, accepted := s.trustedPrincipal(principal)
+	if !accepted || (strings.TrimSpace(selection.UserCatalogID) != "" && strings.TrimSpace(selection.KeyCatalogID) != "") {
 		return servicedto.UsageScope{}, ErrUsageScopeForbidden
 	}
 	if principal.IsAdministrator && strings.TrimSpace(selection.UserCatalogID) == "" && strings.TrimSpace(selection.KeyCatalogID) == "" {
@@ -159,7 +167,8 @@ func (s *IdentityAccessService) ResolveScope(ctx context.Context, principal Acce
 }
 
 func (s *IdentityAccessService) ListScopeUsers(ctx context.Context, principal AccessPrincipal) ([]entities.SourceUser, error) {
-	if !s.acceptsPrincipal(principal) {
+	principal, accepted := s.trustedPrincipal(principal)
+	if !accepted {
 		return nil, ErrUsageScopeForbidden
 	}
 	users, err := s.catalog.ListActiveSourceUsers(ctx, principal.SourceSystem)
@@ -178,7 +187,8 @@ func (s *IdentityAccessService) ListScopeUsers(ctx context.Context, principal Ac
 }
 
 func (s *IdentityAccessService) ListScopeKeys(ctx context.Context, principal AccessPrincipal, userCatalogID string) ([]entities.SourceAPIKey, error) {
-	if !s.acceptsPrincipal(principal) {
+	principal, accepted := s.trustedPrincipal(principal)
+	if !accepted {
 		return nil, ErrUsageScopeForbidden
 	}
 	if !principal.IsAdministrator && strings.TrimSpace(userCatalogID) != "" && strings.TrimSpace(userCatalogID) != principal.SourceUserID {
@@ -208,7 +218,8 @@ func (s *IdentityAccessService) ListScopeKeys(ctx context.Context, principal Acc
 }
 
 func (s *IdentityAccessService) ListIdentityMappings(ctx context.Context, principal AccessPrincipal) ([]repository.IdentityMappingRecord, error) {
-	if !s.acceptsPrincipal(principal) || !principal.IsAdministrator {
+	principal, accepted := s.trustedPrincipal(principal)
+	if !accepted || !principal.IsAdministrator {
 		return nil, ErrUsageScopeForbidden
 	}
 	mappings, err := s.catalog.ListIdentityMappings(ctx, principal.SourceSystem)
@@ -219,7 +230,8 @@ func (s *IdentityAccessService) ListIdentityMappings(ctx context.Context, princi
 }
 
 func (s *IdentityAccessService) ReplaceIdentityMapping(ctx context.Context, principal AccessPrincipal, externalIdentityID, sourceUserID string) error {
-	if !s.acceptsPrincipal(principal) || !principal.IsAdministrator || !s.isActiveSourceUser(ctx, principal.SourceSystem, strings.TrimSpace(sourceUserID)) {
+	principal, accepted := s.trustedPrincipal(principal)
+	if !accepted || !principal.IsAdministrator || !s.isActiveSourceUser(ctx, principal.SourceSystem, strings.TrimSpace(sourceUserID)) {
 		return ErrUsageScopeForbidden
 	}
 	if err := s.catalog.ReplaceIdentityLink(ctx, strings.TrimSpace(externalIdentityID), principal.SourceSystem, strings.TrimSpace(sourceUserID), "manual", true); err != nil {
@@ -271,8 +283,37 @@ func (s *IdentityAccessService) isActiveSourceUser(ctx context.Context, sourceSy
 	return false
 }
 
-func (s *IdentityAccessService) acceptsPrincipal(principal AccessPrincipal) bool {
-	return s != nil && s.catalog != nil && principal.authorized && strings.TrimSpace(principal.SourceSystem) != "" && s.supportsSource(principal.SourceSystem) && (principal.IsAdministrator || strings.TrimSpace(principal.SourceUserID) != "")
+func accessPrincipalFromGrant(grant *accessPrincipalGrant) AccessPrincipal {
+	if grant == nil {
+		return AccessPrincipal{}
+	}
+	return AccessPrincipal{
+		ExternalIdentityID: grant.externalIdentityID,
+		SourceSystem:       grant.sourceSystem,
+		SourceUserID:       grant.sourceUserID,
+		IsAdministrator:    grant.isAdministrator,
+		grant:              grant,
+	}
+}
+
+func newAccessPrincipal(externalIdentityID, sourceSystem, sourceUserID string, isAdministrator bool) AccessPrincipal {
+	return accessPrincipalFromGrant(&accessPrincipalGrant{
+		externalIdentityID: externalIdentityID,
+		sourceSystem:       sourceSystem,
+		sourceUserID:       sourceUserID,
+		isAdministrator:    isAdministrator,
+	})
+}
+
+func (s *IdentityAccessService) trustedPrincipal(principal AccessPrincipal) (AccessPrincipal, bool) {
+	if s == nil || s.catalog == nil || principal.grant == nil {
+		return AccessPrincipal{}, false
+	}
+	trusted := accessPrincipalFromGrant(principal.grant)
+	if strings.TrimSpace(trusted.ExternalIdentityID) == "" || strings.TrimSpace(trusted.SourceSystem) == "" || !s.supportsSource(trusted.SourceSystem) || (!trusted.IsAdministrator && strings.TrimSpace(trusted.SourceUserID) == "") {
+		return AccessPrincipal{}, false
+	}
+	return trusted, true
 }
 
 func (s *IdentityAccessService) supportsSource(sourceSystem string) bool {

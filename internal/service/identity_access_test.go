@@ -105,6 +105,29 @@ func TestResolveScopeRejectsForgedAdministratorPrincipal(t *testing.T) {
 	}
 }
 
+func TestResolveScopeIgnoresMutationsToReturnedUserPrincipal(t *testing.T) {
+	access, alice, bobKeyID := seededIdentityAccessService(t)
+	ctx := context.Background()
+
+	escalated := alice
+	escalated.IsAdministrator = true
+	scope, err := access.ResolveScope(ctx, escalated, ScopeSelection{})
+	if err != nil || scope.Mode != servicedto.UsageScopeKeySet || !sameStrings(scope.APIGroupKeys, []string{"internal-alice-a", "internal-alice-b"}) {
+		t.Fatalf("mutated user administrator scope = %#v, %v; want original user scope", scope, err)
+	}
+
+	bobKey, err := access.catalog.FindActiveSourceAPIKeyByID(ctx, "litellm", bobKeyID)
+	if err != nil {
+		t.Fatalf("FindActiveSourceAPIKeyByID(): %v", err)
+	}
+	otherUser := alice
+	otherUser.SourceUserID = bobKey.SourceUserID
+	scope, err = access.ResolveScope(ctx, otherUser, ScopeSelection{KeyCatalogID: bobKeyID})
+	if err != ErrUsageScopeForbidden || scope.Mode != "" {
+		t.Fatalf("mutated user ownership scope = %#v, %v; want forbidden", scope, err)
+	}
+}
+
 func TestResolveScopeRejectsInactiveAndUnownedKeys(t *testing.T) {
 	access, alice, bobKey := seededIdentityAccessService(t)
 	ctx := context.Background()
