@@ -36,7 +36,11 @@ func TestLiteLLMViewerAuthenticatesVirtualKeyFromKeyInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthenticateViewerKey returned error: %v", err)
 	}
-	if principal != (auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned-token", DisplayName: "Engineering"}) {
+	ref, err := opaqueLiteLLMKeyRef("returned-token")
+	if err != nil {
+		t.Fatalf("opaqueLiteLLMKeyRef() error = %v", err)
+	}
+	if principal != (auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: liteLLMAPIGroupKeyFromRef(ref), DisplayName: "Engineering"}) {
 		t.Fatalf("principal = %+v", principal)
 	}
 	event, err := MapLiteLLMSpendLog(LiteLLMSpendLog{RequestID: "req-1", APIKey: "returned-token"})
@@ -119,17 +123,21 @@ func TestLiteLLMViewerAuthenticationTransportErrorDoesNotLeakSecret(t *testing.T
 
 func TestLiteLLMViewerValidatorAcceptsOnlyCanonicalLiteLLMPrincipal(t *testing.T) {
 	authenticator := NewLiteLLMViewerKeyAuthenticator("http://litellm.invalid", time.Second)
-	valid := auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned-token", DisplayName: "Engineering"}
+	ref, err := opaqueLiteLLMKeyRef("returned-token")
+	if err != nil {
+		t.Fatalf("opaqueLiteLLMKeyRef() error = %v", err)
+	}
+	valid := auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: liteLLMAPIGroupKeyFromRef(ref), DisplayName: "Engineering"}
 	if err := authenticator.ValidateViewerPrincipal(context.Background(), valid); err != nil {
 		t.Fatalf("ValidateViewerPrincipal returned error: %v", err)
 	}
-	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "cliproxy", APIGroupKey: "litellm:returned-token", DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "cliproxy", APIGroupKey: valid.APIGroupKey, DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
 		t.Fatalf("wrong-source validation error = %v", err)
 	}
-	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned token", DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
-		t.Fatalf("noncanonical-token validation error = %v", err)
+	if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: "litellm:returned-token", DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
+		t.Fatalf("raw-token validation error = %v", err)
 	}
-	for _, apiGroupKey := range []string{"litellm:returned-token ", "litellm:returned-token\x00"} {
+	for _, apiGroupKey := range []string{valid.APIGroupKey + " ", valid.APIGroupKey + "\x00"} {
 		if err := authenticator.ValidateViewerPrincipal(context.Background(), auth.ViewerPrincipal{SourceSystem: "litellm", APIGroupKey: apiGroupKey, DisplayName: "Engineering"}); !errors.Is(err, auth.ErrViewerPrincipalUnavailable) {
 			t.Fatalf("noncanonical API group key %q validation error = %v", apiGroupKey, err)
 		}

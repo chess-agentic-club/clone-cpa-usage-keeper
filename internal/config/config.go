@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	DefaultTimeZone                = "Asia/Shanghai"
-	publicLoginPasswordPlaceholder = "replace-with-your-login-password"
-	RedisQueueBatchSizeDefault     = 10000
-	MetadataSyncIntervalDefault    = 30 * time.Second
-	QuotaRefreshWorkerLimitDefault = 10
-	QuotaRefreshWorkerLimitMax     = 100
+	DefaultTimeZone                  = "Asia/Shanghai"
+	publicLoginPasswordPlaceholder   = "replace-with-your-login-password"
+	RedisQueueBatchSizeDefault       = 10000
+	MetadataSyncIntervalDefault      = 30 * time.Second
+	SourceCatalogSyncIntervalDefault = 30 * time.Second
+	QuotaRefreshWorkerLimitDefault   = 10
+	QuotaRefreshWorkerLimitMax       = 100
 )
 
 var (
@@ -43,6 +44,9 @@ type Config struct {
 	LiteLLMSyncInterval time.Duration
 	LiteLLMPageSize     int
 	LiteLLMOverlap      time.Duration
+	// SourceCatalogSyncInterval is the period between complete source user/key
+	// catalog snapshots.
+	SourceCatalogSyncInterval time.Duration
 	// AppHost 是 Web 服务监听主机；空值保持监听所有可用网络接口的现有行为。
 	AppHost string
 	// AppPort 是 Web 服务监听端口。
@@ -205,6 +209,13 @@ func Load(options LoadOptions) (*Config, error) {
 		}
 		return nil, fmt.Errorf("LITELLM_OVERLAP must be positive")
 	}
+	sourceCatalogSyncInterval, err := getDuration("SOURCE_CATALOG_SYNC_INTERVAL", SourceCatalogSyncIntervalDefault)
+	if err != nil {
+		return nil, err
+	}
+	if sourceCatalogSyncInterval <= 0 {
+		return nil, fmt.Errorf("SOURCE_CATALOG_SYNC_INTERVAL must be positive")
+	}
 	usageSource := getString("USAGE_SOURCE", "cliproxy")
 	if usageSource != "cliproxy" && usageSource != "litellm" {
 		return nil, fmt.Errorf("USAGE_SOURCE must be cliproxy or litellm")
@@ -303,6 +314,7 @@ func Load(options LoadOptions) (*Config, error) {
 		LiteLLMSyncInterval:             liteLLMSyncInterval,
 		LiteLLMPageSize:                 liteLLMPageSize,
 		LiteLLMOverlap:                  liteLLMOverlap,
+		SourceCatalogSyncInterval:       sourceCatalogSyncInterval,
 		AppHost:                         strings.TrimSpace(os.Getenv("APP_HOST")),
 		AppPort:                         getString("APP_PORT", "8080"),
 		AppBasePath:                     appBasePath,

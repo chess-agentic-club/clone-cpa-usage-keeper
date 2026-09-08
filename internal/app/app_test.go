@@ -535,6 +535,29 @@ func TestRunSetsQuotaServiceContext(t *testing.T) {
 	}
 }
 
+func TestRunSynchronizesCatalogBeforeStartingCatalogRunner(t *testing.T) {
+	cfg := testAppConfig(t)
+	cfg.AppPort = "invalid-port"
+	preflight := make(chan struct{}, 1)
+	runnerStarted := make(chan struct{}, 1)
+	catalog := &catalogSyncRecorder{preflight: preflight, started: runnerStarted}
+	app := &App{Config: &cfg, Router: gin.New(), CatalogSync: catalog}
+
+	if err := app.Run(); err == nil {
+		t.Fatal("Run() succeeded with an invalid listen port")
+	}
+	select {
+	case <-preflight:
+	case <-time.After(time.Second):
+		t.Fatal("catalog did not complete its startup synchronization")
+	}
+	select {
+	case <-runnerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("catalog runner did not start after startup synchronization")
+	}
+}
+
 func TestRunCancelsBackgroundTasksWhenRouterStops(t *testing.T) {
 	cfg := testAppConfig(t)
 	cfg.AppPort = "invalid-port"
@@ -668,18 +691,35 @@ func readAppLogFile(t *testing.T, logDir string) string {
 func testAppConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
-		AppPort:                "8080",
-		CPABaseURL:             "https://cpa.example.com",
-		CPAManagementKey:       "secret",
-		RedisQueueIdleInterval: time.Second,
-		MetadataSyncInterval:   30 * time.Second,
-		SQLitePath:             t.TempDir() + "/app.db",
-		BackupEnabled:          true,
-		BackupDir:              t.TempDir() + "/backups",
-		BackupRetentionDays:    7,
-		RequestTimeout:         5 * time.Second,
-		LogLevel:               "info",
-		LogFileEnabled:         false,
-		LogRetentionDays:       7,
+		AppPort:                   "8080",
+		CPABaseURL:                "https://cpa.example.com",
+		CPAManagementKey:          "secret",
+		RedisQueueIdleInterval:    time.Second,
+		MetadataSyncInterval:      30 * time.Second,
+		SourceCatalogSyncInterval: 30 * time.Second,
+		SQLitePath:                t.TempDir() + "/app.db",
+		BackupEnabled:             true,
+		BackupDir:                 t.TempDir() + "/backups",
+		BackupRetentionDays:       7,
+		RequestTimeout:            5 * time.Second,
+		LogLevel:                  "info",
+		LogFileEnabled:            false,
+		LogRetentionDays:          7,
 	}
+}
+
+type catalogSyncRecorder struct {
+	preflight chan<- struct{}
+	started   chan<- struct{}
+}
+
+func (r *catalogSyncRecorder) SyncOnce(context.Context) error {
+	r.preflight <- struct{}{}
+	return nil
+}
+
+func (r *catalogSyncRecorder) Run(ctx context.Context) error {
+	r.started <- struct{}{}
+	<-ctx.Done()
+	return nil
 }

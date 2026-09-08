@@ -220,6 +220,26 @@ func TestLoadFromEnvAcceptsLiteLLMSettingsWithoutCPASettings(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvConfiguresPositiveSourceCatalogSyncInterval(t *testing.T) {
+	t.Setenv("USAGE_SOURCE", "litellm")
+	t.Setenv("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+	t.Setenv("LITELLM_MASTER_KEY", "master-key")
+	t.Setenv("SOURCE_CATALOG_SYNC_INTERVAL", "45s")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.SourceCatalogSyncInterval != 45*time.Second {
+		t.Fatalf("SourceCatalogSyncInterval = %s, want 45s", cfg.SourceCatalogSyncInterval)
+	}
+	for _, value := range []string{"0s", "-1s"} {
+		t.Setenv("SOURCE_CATALOG_SYNC_INTERVAL", value)
+		if _, err := LoadFromEnv(); err == nil || err.Error() != "SOURCE_CATALOG_SYNC_INTERVAL must be positive" {
+			t.Fatalf("SOURCE_CATALOG_SYNC_INTERVAL=%q error = %v", value, err)
+		}
+	}
+}
+
 func TestLoadReadsSpecifiedEnvFile(t *testing.T) {
 	withIsolatedEnvFiles(t)
 	envDir := t.TempDir()

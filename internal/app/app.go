@@ -32,6 +32,13 @@ type Runner interface {
 	Run(ctx context.Context) error
 }
 
+// CatalogSyncRunner refreshes a complete source identity snapshot before and
+// during the App lifecycle.
+type CatalogSyncRunner interface {
+	Runner
+	SyncOnce(context.Context) error
+}
+
 // StatusProvider 只提供运行状态，不作为后台 runner 启动。
 type StatusProvider interface {
 	Status() poller.Status
@@ -60,6 +67,8 @@ type App struct {
 	RedisIngest   Runner
 	RedisProcess  Runner
 	LiteLLMIngest Runner
+	CatalogSync   CatalogSyncRunner
+	CatalogReady  bool
 	// CPAErrors 是完全独立的 best-effort errors 订阅；停止或失败不影响 Usage 与 HTTP。
 	CPAErrors Runner
 	// UsageAggregation 是唯一串行调度三类派生聚合事务的后台 runner。
@@ -402,6 +411,17 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 			optionalProviders,
 		),
 	}
+	catalog := repository.NewCatalogRepository(db)
+	if cfg.UsageSource == "litellm" {
+		application.CatalogSync = poller.NewLiteLLMCatalogRunner(
+			poller.NewLiteLLMClient(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, cfg.RequestTimeout),
+			catalog,
+			cfg.SourceCatalogSyncInterval,
+			cfg.LiteLLMPageSize,
+		)
+	} else {
+		application.CatalogSync = service.NewCLIProxyCatalogSyncer(db, catalog, cfg.SourceCatalogSyncInterval)
+	}
 	if cfg.UsageSource == "litellm" {
 		// LiteLLM has its own HTTP polling runtime. Do not start CPA transport,
 		// quota, auth-file, metadata, or error-stream background jobs in this mode.
@@ -507,6 +527,17 @@ func (a *App) Run() error {
 
 	ctx := a.startBackgroundContext()
 	defer a.stopBackgroundTasks()
+	if a.CatalogSync != nil {
+		if err := a.CatalogSync.SyncOnce(ctx); err != nil {
+			return fmt.Errorf("synchronize source catalog at startup: %w", err)
+		}
+		a.CatalogReady = true
+		a.startBackgroundTask(func() {
+			if err := a.CatalogSync.Run(ctx); err != nil {
+				logrus.Errorf("source catalog synchronization stopped: %v", err)
+			}
+		})
+	}
 	if a.RedisIngest != nil {
 		a.startBackgroundTask(func() {
 			if err := a.RedisIngest.Run(ctx); err != nil {

@@ -103,8 +103,8 @@ func (a *LiteLLMViewerKeyAuthenticator) ValidateViewerPrincipal(_ context.Contex
 	if a == nil || principal.SourceSystem != liteLLMSourceSystem {
 		return auth.ErrViewerPrincipalUnavailable
 	}
-	token := strings.TrimPrefix(principal.APIGroupKey, liteLLMSourceSystem+":")
-	if !isCanonicalLiteLLMToken(token) || principal.APIGroupKey != liteLLMAPIGroupKey(token) {
+	ref, found := strings.CutPrefix(principal.APIGroupKey, liteLLMSourceSystem+":")
+	if !found || !isLiteLLMOpaqueKeyRef(ref) {
 		return auth.ErrViewerPrincipalUnavailable
 	}
 	principal, err := auth.NormalizeViewerPrincipal(principal)
