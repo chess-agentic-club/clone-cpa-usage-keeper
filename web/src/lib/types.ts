@@ -10,6 +10,7 @@ export interface AuthSessionResponse {
   authenticated: boolean
   role?: AuthRole
   api_key?: AuthSessionAPIKeySummary
+  capabilities?: SourceCapabilitiesResponse
 }
 
 export type AuthManagedSessionKind = 'admin' | 'api_key'
@@ -56,6 +57,7 @@ export interface SourceCapabilitiesResponse {
   cpa_quota?: boolean
   litellm_users?: boolean
   litellm_teams?: boolean
+  viewer_key_login?: boolean
 }
 
 export type QuotaAutoRefreshScheduleUnit = 'minute' | 'hour' | 'day' | 'week'

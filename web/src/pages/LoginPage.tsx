@@ -24,6 +24,7 @@ type LoginErrors = {
 
 interface LoginPageProps extends LoginErrors {
   loading?: boolean;
+  viewerKeyLoginEnabled?: boolean;
   onPasswordSubmit: (password: string) => Promise<void>;
   onAPIKeySubmit: (apiKey: string) => Promise<void>;
 }
@@ -32,7 +33,7 @@ export const getLoginErrorForMode = (mode: LoginMode, { adminError = '', apiKeyE
   mode === 'api_key' ? apiKeyError : adminError
 );
 
-export function LoginPage({ loading = false, adminError = '', apiKeyError = '', onPasswordSubmit, onAPIKeySubmit }: LoginPageProps) {
+export function LoginPage({ loading = false, viewerKeyLoginEnabled = true, adminError = '', apiKeyError = '', onPasswordSubmit, onAPIKeySubmit }: LoginPageProps) {
   const { t } = useTranslation();
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
@@ -47,14 +48,14 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (mode === 'api_key') {
+    if (viewerKeyLoginEnabled && mode === 'api_key') {
       await onAPIKeySubmit(apiKey);
       return;
     }
     await onPasswordSubmit(password);
   };
 
-  const canSubmit = mode === 'api_key' ? Boolean(apiKey.trim()) : Boolean(password.trim());
+  const canSubmit = viewerKeyLoginEnabled && mode === 'api_key' ? Boolean(apiKey.trim()) : Boolean(password.trim());
 
   return (
     <div className={styles.pageShell} data-keeper-page="login">
@@ -102,16 +103,18 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
             >
               {t('auth.admin_tab')}
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'api_key'}
-              className={`${styles.tab} ${mode === 'api_key' ? styles.tabActive : ''}`.trim()}
-              onClick={() => setMode('api_key')}
-              disabled={loading}
-            >
-              {t('auth.api_key_tab')}
-            </button>
+            {viewerKeyLoginEnabled && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === 'api_key'}
+                className={`${styles.tab} ${mode === 'api_key' ? styles.tabActive : ''}`.trim()}
+                onClick={() => setMode('api_key')}
+                disabled={loading}
+              >
+                {t('auth.api_key_tab')}
+              </button>
+            )}
           </div>
 
           <form className={styles.form} onSubmit={(event) => void handleSubmit(event)}>

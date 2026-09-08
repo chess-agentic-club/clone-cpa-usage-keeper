@@ -77,6 +77,7 @@ export type UsageSourceCapabilities = {
   cpaAuthFiles: boolean;
   cpaQuota: boolean;
   cpaAPIKeyMetadata: boolean;
+  viewerKeyLogin: boolean;
 };
 
 const CLIPROXY_CAPABILITIES: UsageSourceCapabilities = {
@@ -84,6 +85,7 @@ const CLIPROXY_CAPABILITIES: UsageSourceCapabilities = {
   cpaAuthFiles: true,
   cpaQuota: true,
   cpaAPIKeyMetadata: true,
+  viewerKeyLogin: true,
 };
 
 const LITELLM_CAPABILITIES: UsageSourceCapabilities = {
@@ -91,6 +93,7 @@ const LITELLM_CAPABILITIES: UsageSourceCapabilities = {
   cpaAuthFiles: false,
   cpaQuota: false,
   cpaAPIKeyMetadata: false,
+  viewerKeyLogin: true,
 };
 
 export const getUsageSourceCapabilities = (
@@ -109,6 +112,7 @@ export const getUsageSourceCapabilities = (
     // CPA key metadata is unavailable for LiteLLM. Older servers do not
     // advertise it explicitly, so preserve the CLIProxy fallback there.
     cpaAPIKeyMetadata: status?.usage_source === 'litellm' ? false : (cpaAuthFiles || cpaQuota),
+    viewerKeyLogin: capabilities.viewer_key_login ?? fallback.viewerKeyLogin,
   };
 };
 

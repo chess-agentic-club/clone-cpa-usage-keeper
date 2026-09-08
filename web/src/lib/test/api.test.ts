@@ -26,20 +26,20 @@ describe('fetchUsageEvents', () => {
     expect(isUsageRangeBoundsConflict?.(new Error('network error'))).toBe(false);
   });
 
-  it('posts CPA API key logins to the dedicated auth endpoint', async () => {
+  it('posts viewer key logins with exactly the API key request field', async () => {
     vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({}),
     } as Response);
 
-    await loginWithCPAAPIKey('sk-cpa-viewer');
+    await loginWithCPAAPIKey('sk-virtual');
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(new URL(String(url), 'http://localhost').pathname).toBe('/api/v1/auth/api-key-login');
     expect(init).toMatchObject({ credentials: 'include', method: 'POST' });
     expect(headerValue(init, 'Content-Type')).toBe('application/json');
-    expect(init?.body).toBe(JSON.stringify({ apiKey: 'sk-cpa-viewer' }));
+    expect(init?.body).toBe(JSON.stringify({ apiKey: 'sk-virtual' }));
   });
 
   it('loads key overview with only the viewer range query', async () => {

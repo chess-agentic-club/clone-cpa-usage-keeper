@@ -7,12 +7,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/poller"
+	repositorydto "cpa-usage-keeper/internal/repository/dto"
+	servicedto "cpa-usage-keeper/internal/service/dto"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,6 +35,38 @@ type authViewerKeyAdapterStub struct {
 	validationErr   error
 	authenticateKey string
 	validationCalls int
+}
+
+type revalidatingLiteLLMTestAdapter struct {
+	authenticator *poller.LiteLLMViewerKeyAuthenticator
+}
+
+func (a *revalidatingLiteLLMTestAdapter) AuthenticateViewerKey(ctx context.Context, rawKey string) (auth.ViewerPrincipal, error) {
+	return a.authenticator.AuthenticateViewerKey(ctx, rawKey)
+}
+
+func (a *revalidatingLiteLLMTestAdapter) ValidateViewerPrincipal(ctx context.Context, principal auth.ViewerPrincipal) error {
+	token := strings.TrimPrefix(principal.APIGroupKey, "litellm:")
+	resolved, err := a.authenticator.AuthenticateViewerKey(ctx, token)
+	if err != nil || resolved.SourceSystem != principal.SourceSystem || resolved.APIGroupKey != principal.APIGroupKey {
+		return auth.ErrViewerPrincipalUnavailable
+	}
+	return nil
+}
+
+type seededViewerUsageProvider struct {
+	usageFilterStub
+	requestCounts map[string]int64
+}
+
+func (p *seededViewerUsageProvider) GetUsageOverview(_ context.Context, filter servicedto.UsageFilter) (*servicedto.UsageOverviewSnapshot, error) {
+	p.lastFilter = filter
+	p.overviewCalls++
+	count := p.requestCounts[filter.APIGroupKey]
+	return &servicedto.UsageOverviewSnapshot{Usage: &repositorydto.StatisticsSnapshot{
+		TotalRequests: count,
+		SuccessCount:  count,
+	}}, nil
 }
 
 func (s *authViewerKeyAdapterStub) AuthenticateViewerKey(_ context.Context, rawKey string) (auth.ViewerPrincipal, error) {
@@ -100,6 +136,126 @@ func TestAuthSessionReportsAuthenticatedWhenDisabled(t *testing.T) {
 
 	if resp.Code != http.StatusOK || !contains(resp.Body.String(), `"authenticated":true`) {
 		t.Fatalf("unexpected response: %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestAuthSessionExposesViewerKeyLoginCapabilityBeforeLogin(t *testing.T) {
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
+	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, auth.NewSessionManager(time.Hour)), "", OptionalProviders{
+		Status: StatusRouteConfig{
+			UsageSource:  "litellm",
+			Capabilities: SourceCapabilitiesForUsageSource("litellm"),
+		},
+	})
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK || !contains(resp.Body.String(), `"authenticated":false`) || !contains(resp.Body.String(), `"viewer_key_login":true`) {
+		t.Fatalf("unexpected pre-login session capabilities: %d %s", resp.Code, resp.Body.String())
+	}
+	if contains(resp.Body.String(), `"cpa_auth_files":true`) || contains(resp.Body.String(), `"cpa_quota":true`) {
+		t.Fatalf("LiteLLM session bootstrap advertised CPA integration: %s", resp.Body.String())
+	}
+}
+
+func TestLiteLLMViewerLoginScopeRevocationAndCredentialIsolation(t *testing.T) {
+	const (
+		rawKey         = "sk-virtual-secret"
+		canonicalToken = "token-engineering"
+		canonicalGroup = "litellm:" + canonicalToken
+	)
+	blocked := false
+	liteLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/key/info" || r.URL.RawQuery != "" {
+			t.Errorf("unexpected LiteLLM request: %s %s", r.Method, r.URL.RequestURI())
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		authorization := r.Header.Get("Authorization")
+		if authorization != "Bearer "+rawKey && authorization != "Bearer "+canonicalToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"info":{"token":"` + canonicalToken + `","key_alias":"Engineering","blocked":` + strconv.FormatBool(blocked) + `}}`))
+	}))
+	defer liteLLM.Close()
+
+	sessions := auth.NewSessionManager(time.Hour)
+	config := AuthConfig{
+		Enabled:                  true,
+		LoginPassword:            "secret",
+		SessionTTL:               time.Hour,
+		ViewerKeyRevalidationTTL: time.Millisecond,
+	}
+	handler := NewAuthHandler(config, sessions)
+	adapter := &revalidatingLiteLLMTestAdapter{authenticator: poller.NewLiteLLMViewerKeyAuthenticator(liteLLM.URL, time.Second)}
+	handler.SetViewerKeyAuthenticator(adapter, adapter)
+	usage := &seededViewerUsageProvider{requestCounts: map[string]int64{
+		canonicalGroup:  1,
+		"litellm:other": 99,
+	}}
+	router := NewRouter(nil, nil, usage, nil, config, handler, "", OptionalProviders{
+		Status: StatusRouteConfig{UsageSource: "litellm", Capabilities: SourceCapabilitiesForUsageSource("litellm")},
+	})
+
+	loginResp := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"`+rawKey+`"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	router.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusNoContent {
+		t.Fatalf("unexpected login response: %d %s", loginResp.Code, loginResp.Body.String())
+	}
+	cookies := loginResp.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected viewer session cookie, got %+v", cookies)
+	}
+
+	sessionResp := httptest.NewRecorder()
+	sessionReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	sessionReq.AddCookie(cookies[0])
+	router.ServeHTTP(sessionResp, sessionReq)
+	if sessionResp.Code != http.StatusOK || !contains(sessionResp.Body.String(), `"display_key":"Engineering"`) {
+		t.Fatalf("unexpected sanitized session response: %d %s", sessionResp.Code, sessionResp.Body.String())
+	}
+
+	overviewResp := httptest.NewRecorder()
+	overviewReq := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview?range=24h&api_key_id=other", nil)
+	overviewReq.AddCookie(cookies[0])
+	router.ServeHTTP(overviewResp, overviewReq)
+	if overviewResp.Code != http.StatusOK || !contains(overviewResp.Body.String(), `"total_requests":1`) || usage.lastFilter.APIGroupKey != canonicalGroup {
+		t.Fatalf("unexpected source-scoped overview: status=%d filter=%+v body=%s", overviewResp.Code, usage.lastFilter, overviewResp.Body.String())
+	}
+
+	blocked = true
+	time.Sleep(2 * time.Millisecond)
+	revokedResp := httptest.NewRecorder()
+	revokedReq := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview?range=24h", nil)
+	revokedReq.AddCookie(cookies[0])
+	router.ServeHTTP(revokedResp, revokedReq)
+	if revokedResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected blocked key to be rejected after cache expiry, got %d %s", revokedResp.Code, revokedResp.Body.String())
+	}
+
+	storedSessions, err := json.Marshal(sessions.List())
+	if err != nil {
+		t.Fatalf("marshal sessions: %v", err)
+	}
+	for name, value := range map[string]string{
+		"login response":    loginResp.Body.String(),
+		"session response":  sessionResp.Body.String(),
+		"overview response": overviewResp.Body.String(),
+		"revoked response":  revokedResp.Body.String(),
+	} {
+		if strings.Contains(value, rawKey) || strings.Contains(value, canonicalGroup) {
+			t.Fatalf("%s leaked a raw or canonical key: %s", name, value)
+		}
+	}
+	if strings.Contains(string(storedSessions), rawKey) {
+		t.Fatalf("stored sessions leaked raw key: %s", storedSessions)
 	}
 }
 

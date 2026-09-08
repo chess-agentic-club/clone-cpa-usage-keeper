@@ -51,6 +51,7 @@ type AuthConfig struct {
 
 type authHandler struct {
 	config                   AuthConfig
+	capabilities             SourceCapabilities
 	sessions                 *auth.SessionManager
 	legacyCPAAPIKeyProvider  service.CPAAPIKeyProvider
 	viewerKeyAuthenticator   auth.ViewerKeyAuthenticator
@@ -72,6 +73,7 @@ type sessionResponse struct {
 	Authenticated bool                   `json:"authenticated"`
 	Role          auth.Role              `json:"role,omitempty"`
 	APIKey        *sessionAPIKeyResponse `json:"api_key,omitempty"`
+	Capabilities  SourceCapabilities     `json:"capabilities"`
 }
 
 type sessionAPIKeyResponse struct {
@@ -140,10 +142,11 @@ func (h *authHandler) setViewerKeyAuthenticator(authenticator auth.ViewerKeyAuth
 	h.viewerPrincipalResolver, _ = authenticator.(auth.ViewerPrincipalResolver)
 }
 
-func (h *authHandler) registerRoutes(router gin.IRoutes, apiKeyLoginEnabled bool) {
+func (h *authHandler) registerRoutes(router gin.IRoutes, capabilities SourceCapabilities) {
+	h.capabilities = capabilities
 	router.GET("/session", h.getSession)
 	router.POST("/login", h.login)
-	if apiKeyLoginEnabled {
+	if capabilities.ViewerKeyLogin {
 		router.POST("/api-key-login", h.apiKeyLogin)
 	}
 	router.POST("/logout", h.logout)
@@ -360,26 +363,30 @@ func (h *authHandler) resolveValidSession(c *gin.Context) (resolvedSessionToken,
 }
 
 func (h *authHandler) getSession(c *gin.Context) {
-	if h == nil || !h.config.Enabled {
+	if h == nil {
 		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin})
 		return
 	}
+	if !h.config.Enabled {
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: true, Role: auth.RoleAdmin, Capabilities: h.capabilities})
+		return
+	}
 	if h.sessions == nil {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities})
 		return
 	}
 
 	resolved, session, ok := h.resolveValidSession(c)
 	if !ok {
-		c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+		c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities})
 		return
 	}
-	response := sessionResponse{Authenticated: true, Role: session.Role}
+	response := sessionResponse{Authenticated: true, Role: session.Role, Capabilities: h.capabilities}
 	if session.Role == auth.RoleAPIKeyViewer {
 		if session.CPAAPIKeyID > 0 {
 			row, ok := h.activeViewerAPIKey(c, resolved, session)
 			if !ok {
-				c.JSON(http.StatusOK, sessionResponse{Authenticated: false})
+				c.JSON(http.StatusOK, sessionResponse{Authenticated: false, Capabilities: h.capabilities})
 				return
 			}
 			response.APIKey = &sessionAPIKeyResponse{

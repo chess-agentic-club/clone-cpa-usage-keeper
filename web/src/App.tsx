@@ -4,7 +4,7 @@ import './index.css';
 import './App.css';
 import './embed/cpamcEmbed.css';
 import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey } from './lib/api';
-import type { AuthRole, AuthSessionAPIKeySummary } from './lib/types';
+import type { AuthRole, AuthSessionAPIKeySummary, AuthSessionResponse } from './lib/types';
 import { AppFooter } from './components/AppFooter';
 import { isKeyViewerPath, type KeyViewerPath } from './features/key-viewer';
 import { KeyAnalysisPage } from './pages/KeyAnalysisPage';
@@ -49,6 +49,10 @@ export const shouldNormalizeRolePath = (
   isEmbeddedInCPAMC = false,
 ): boolean => currentPath !== getRoleTargetPath(role, currentPath, isEmbeddedInCPAMC);
 
+export const isViewerKeyLoginEnabled = (session: Pick<AuthSessionResponse, 'capabilities'>): boolean => (
+  session.capabilities?.viewer_key_login ?? true
+);
+
 function App() {
   const { t } = useTranslation();
   const [authState, setAuthState] = useState<AuthState>('checking');
@@ -58,6 +62,7 @@ function App() {
   const [adminLoginError, setAdminLoginError] = useState('');
   const [apiKeyLoginError, setAPIKeyLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [viewerKeyLoginEnabled, setViewerKeyLoginEnabled] = useState(true);
   const clearUsageStats = useUsageStatsStore((state) => state.clearUsageStats);
   const isEmbeddedInCPAMC = isCPAMCEmbed();
 
@@ -70,6 +75,7 @@ function App() {
   }, [clearUsageStats]);
 
   const applySession = useCallback((session: Awaited<ReturnType<typeof getSession>>) => {
+    setViewerKeyLoginEnabled(isViewerKeyLoginEnabled(session));
     if (!session.authenticated) {
       clearSession();
       return;
@@ -171,7 +177,7 @@ function App() {
   if (authState === 'checking') {
     page = <div className="app-checking" aria-busy="true" />;
   } else if (authState === 'unauthenticated') {
-    page = <LoginPage loading={submitting} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
+    page = <LoginPage viewerKeyLoginEnabled={viewerKeyLoginEnabled} loading={submitting} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
   } else if (authRole === 'api_key_viewer') {
     page = keyViewerPath === '/key-analysis'
       ? <KeyAnalysisPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />

@@ -124,7 +124,7 @@ func NewRouter(
 		viewerAdapter := service.NewCPAAPIKeyViewerAdapter(cpaAPIKeyProvider)
 		authHandler.setViewerKeyAuthenticator(viewerAdapter, viewerAdapter)
 	}
-	authHandler.registerRoutes(authGroup, capabilities.ViewerKeyLogin)
+	authHandler.registerRoutes(authGroup, capabilities)
 	requestLogDownloadTokens := newRequestLogDownloadTokenStore()
 
 	if capabilities.HasCPAIntegration() {

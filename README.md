@@ -277,6 +277,7 @@ services:
       USAGE_SOURCE: litellm
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
+      VIEWER_KEY_REVALIDATION_TTL: 1m
       AUTH_ENABLED: "true"
       LOGIN_PASSWORD: ${KEEPER_LOGIN_PASSWORD:?set KEEPER_LOGIN_PASSWORD}
       WORK_DIR: /data
@@ -288,6 +289,17 @@ The dashboard keeps Overview, Analysis, Request Events, costs, and generic
 API-key filters. CPA Auth Files, quota, and CPA API-key management are not
 available in LiteLLM mode. Switching sources requires a separate deployment
 and database (`USAGE_SOURCE=cliproxy` or `litellm`).
+
+`LITELLM_BASE_URL` and `LITELLM_MASTER_KEY` are server-side poller settings;
+the master key must never be sent to the browser or used for dashboard login.
+Create LiteLLM virtual keys for viewers and have them use **API Key view**.
+Keeper retains only the source-owned canonical identity and server-provided
+display label. `VIEWER_KEY_REVALIDATION_TTL` controls the successful viewer
+validation cache and defaults to `1m`.
+
+The viewer dashboard consumes a source-neutral canonical scope. A future Omni
+Router/9router integration needs a source adapter plus canonical usage
+mapping, without source-specific changes to the dashboard handlers.
 
 ### Docker (CPA Already Runs On The Host)
 

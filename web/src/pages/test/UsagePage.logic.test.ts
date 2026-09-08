@@ -847,6 +847,7 @@ describe('UsagePage tab labels', () => {
     expect(getCredentialSectionVisibility('auth-files', capabilities).enabled).toBe(false);
     expect(getCredentialSectionVisibility('ai-provider', capabilities).enabled).toBe(false);
     expect(getSettingsSectionVisibility(capabilities).showCPAAPIKeySettings).toBe(false);
+    expect(capabilities.viewerKeyLogin).toBe(true);
     expect(resolveAvailableUsageTab('auth-files', capabilities)).toBe('overview');
   });
 });

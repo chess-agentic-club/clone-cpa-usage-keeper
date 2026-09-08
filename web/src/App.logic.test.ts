@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { I18nextProvider } from 'react-i18next';
 import { describe, expect, it } from 'vitest';
-import { getRoleHomePath, shouldNormalizeRolePath } from './App';
+import i18n from './i18n';
+import { KeyViewerShell } from './features/key-viewer/KeyViewerShell';
+import { getRoleHomePath, isViewerKeyLoginEnabled, shouldNormalizeRolePath } from './App';
 
 const appSource = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const appStylesSource = readFileSync(new URL('./App.css', import.meta.url), 'utf8');
@@ -16,6 +21,45 @@ describe('App role route normalization', () => {
     expect(getRoleHomePath('api_key_viewer')).toBe('/key-overview');
     expect(shouldNormalizeRolePath('api_key_viewer', '/')).toBe(true);
     expect(shouldNormalizeRolePath('api_key_viewer', '/key-overview')).toBe(false);
+    expect(shouldNormalizeRolePath('api_key_viewer', '/settings')).toBe(true);
+    expect(shouldNormalizeRolePath('api_key_viewer', '/auth-files')).toBe(true);
+  });
+
+  it('uses viewer_key_login instead of CPA integration capabilities', () => {
+    expect(isViewerKeyLoginEnabled({
+      authenticated: false,
+      capabilities: {
+        viewer_key_login: true,
+        cpa_auth_files: false,
+        cpa_quota: false,
+      },
+    })).toBe(true);
+    expect(isViewerKeyLoginEnabled({
+      authenticated: false,
+      capabilities: {
+        viewer_key_login: false,
+        cpa_auth_files: true,
+        cpa_quota: true,
+      },
+    })).toBe(false);
+  });
+
+  it('renders only the server-provided viewer label, never raw or canonical key material', () => {
+    const markup = renderToStaticMarkup(createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(KeyViewerShell, {
+        activePage: 'overview',
+        apiKey: { display_key: 'Engineering •••• 1234' },
+        toolbar: createElement('div'),
+        onNavigate: () => undefined,
+        children: createElement('div'),
+      }),
+    ));
+
+    expect(markup).toContain('Engineering •••• 1234');
+    expect(markup).not.toContain('sk-virtual');
+    expect(markup).not.toContain('litellm:token-engineering');
   });
 
   it('clears stale overview auth errors when the session is cleared', () => {
