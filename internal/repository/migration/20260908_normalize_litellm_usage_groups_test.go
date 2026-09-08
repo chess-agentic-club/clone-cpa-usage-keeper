@@ -35,10 +35,10 @@ func TestNormalizeLegacyLiteLLMUsageGroupsMigratesAllPersistedProjections(t *tes
 	if err := db.Create(&entities.AuthSession{TokenHash: "session", Role: "viewer", Source: "api-key", ViewerSourceSystem: "litellm", ViewerAPIGroupKey: legacy, ExpiresAt: now.Add(time.Hour)}).Error; err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	if err := db.Create(&entities.UsageOverviewHourlyStat{BucketStart: now, APIGroupKey: legacy, Model: "model"}).Error; err != nil {
+	if err := db.Create(&entities.UsageOverviewHourlyStat{BucketStart: now, APIGroupKey: legacy, Model: "model", RequestCount: 1, TotalTokens: 1}).Error; err != nil {
 		t.Fatalf("seed hourly rollup: %v", err)
 	}
-	if err := db.Create(&entities.UsageOverviewDailyStat{BucketStart: now, APIGroupKey: legacy, Model: "model"}).Error; err != nil {
+	if err := db.Create(&entities.UsageOverviewDailyStat{BucketStart: now, APIGroupKey: legacy, Model: "model", RequestCount: 1, TotalTokens: 1}).Error; err != nil {
 		t.Fatalf("seed daily rollup: %v", err)
 	}
 	if err := db.Create(&entities.UsageActivityStat{Grain: entities.UsageActivityGrainDaily, BucketStart: now, BucketEnd: now.Add(time.Hour), APIGroupKey: legacy}).Error; err != nil {
@@ -74,7 +74,7 @@ func TestNormalizeLegacyLiteLLMUsageGroupsMigratesAllPersistedProjections(t *tes
 		}
 	}
 	var hourly entities.UsageOverviewHourlyStat
-	if err := db.Where("api_group_key = ?", canonical).First(&hourly).Error; err != nil || hourly.RequestCount != 2 {
+	if err := db.Where("api_group_key = ?", canonical).First(&hourly).Error; err != nil || hourly.RequestCount != 3 || hourly.TotalTokens != 1 {
 		t.Fatal("hourly collision was not reconciled")
 	}
 	var unattributed int64
