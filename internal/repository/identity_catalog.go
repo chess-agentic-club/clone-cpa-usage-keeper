@@ -238,8 +238,17 @@ func validateSourceCatalogSnapshot(snapshot SourceCatalogSnapshot) (validatedSou
 	}
 	keys := make(map[string]struct{}, len(snapshot.Keys))
 	for _, input := range snapshot.Keys {
-		input.SourceKeyRef, input.SourceUserRef, input.UsageGroupRef, input.DisplayName = strings.TrimSpace(input.SourceKeyRef), strings.TrimSpace(input.SourceUserRef), strings.TrimSpace(input.UsageGroupRef), strings.TrimSpace(input.DisplayName)
-		if input.SourceKeyRef == "" || input.SourceUserRef == "" || input.UsageGroupRef == "" {
+		input.SourceUserRef, input.DisplayName = strings.TrimSpace(input.SourceUserRef), strings.TrimSpace(input.DisplayName)
+		var err error
+		input.SourceKeyRef, err = safeSourceReference(input.SourceKeyRef)
+		if err != nil {
+			return validated, fmt.Errorf("source API key reference is unsafe")
+		}
+		input.UsageGroupRef, err = safeSourceReference(input.UsageGroupRef)
+		if err != nil {
+			return validated, fmt.Errorf("source API key usage group reference is unsafe")
+		}
+		if input.SourceUserRef == "" {
 			return validated, fmt.Errorf("source API key fields are required")
 		}
 		if _, ownerExists := users[input.SourceUserRef]; !ownerExists {
@@ -344,6 +353,68 @@ func markAbsentSourceAPIKeysInactive(tx *gorm.DB, sourceSystem string, inputs []
 }
 
 func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
+
+// safeSourceReference is the catalog's trust boundary for key-adjacent source
+// values. Snapshot producers must supply a short, non-secret entity reference
+// or group reference, never a credential, JWT, authorization value, or hash.
+func safeSourceReference(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return "", fmt.Errorf("invalid source reference")
+	}
+	for _, char := range value {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._:-", char)) {
+			return "", fmt.Errorf("invalid source reference")
+		}
+	}
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{"authorization", "bearer", "token", "secret", "master", "api_key", "apikey"} {
+		if strings.Contains(lower, forbidden) {
+			return "", fmt.Errorf("invalid source reference")
+		}
+	}
+	if strings.HasPrefix(lower, "sk-") || looksLikeJWT(value) || looksLikeHash(value) || looksLikeLongOpaqueValue(value) {
+		return "", fmt.Errorf("invalid source reference")
+	}
+	return value, nil
+}
+
+func looksLikeJWT(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if len(part) < 8 {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikeHash(value string) bool {
+	if len(value) != 32 && len(value) != 40 && len(value) != 64 && len(value) != 96 && len(value) != 128 {
+		return false
+	}
+	for _, char := range value {
+		if !((char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F') || (char >= '0' && char <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikeLongOpaqueValue(value string) bool {
+	if len(value) < 32 {
+		return false
+	}
+	for _, char := range value {
+		if char == ':' || char == '-' || char == '_' || char == '.' {
+			return false
+		}
+	}
+	return true
+}
 
 func newOpaqueCatalogID() (string, error) {
 	bytes := make([]byte, 16)

@@ -20,7 +20,7 @@ func TestApplySourceSnapshotIsAtomicAndMarksMissingRowsInactive(t *testing.T) {
 			SourceUserRef: "user-a", Email: "USER@example.com", DisplayName: "User A", Active: true,
 		}},
 		Keys: []SourceAPIKeyInput{{
-			SourceKeyRef: strings.Repeat("a", 64), SourceUserRef: "user-a", UsageGroupRef: "litellm:" + strings.Repeat("a", 64), DisplayName: "Engineering", Active: true,
+			SourceKeyRef: "key-source-a", SourceUserRef: "user-a", UsageGroupRef: "litellm:engineering", DisplayName: "Engineering", Active: true,
 		}},
 	}
 	if err := catalog.ApplySourceSnapshot(ctx, first); err != nil {
@@ -92,6 +92,54 @@ func TestApplySourceSnapshotRejectsInvalidInputWithoutChangingPriorState(t *test
 	}
 }
 
+func TestApplySourceSnapshotRejectsUnsafeKeyReferencesWithoutPersistingThem(t *testing.T) {
+	db := openTestDatabase(t)
+	catalog := NewCatalogRepository(db)
+	ctx := context.Background()
+	initial := SourceCatalogSnapshot{
+		SourceSystem: "litellm", SyncedAt: time.Date(2026, 9, 8, 11, 0, 0, 0, time.UTC),
+		Users: []SourceUserInput{{SourceUserRef: "user-a", Email: "a@example.com", Active: true}},
+		Keys:  []SourceAPIKeyInput{{SourceKeyRef: "key-a", SourceUserRef: "user-a", UsageGroupRef: "group-a", Active: true}},
+	}
+	if err := catalog.ApplySourceSnapshot(ctx, initial); err != nil {
+		t.Fatalf("apply initial snapshot: %v", err)
+	}
+	unsafeReference := "sk-live-example-credential"
+	if err := catalog.ApplySourceSnapshot(ctx, SourceCatalogSnapshot{
+		SourceSystem: "litellm", SyncedAt: initial.SyncedAt.Add(time.Minute),
+		Users: initial.Users,
+		Keys:  []SourceAPIKeyInput{{SourceKeyRef: unsafeReference, SourceUserRef: "user-a", UsageGroupRef: "group-a", Active: true}},
+	}); err == nil {
+		t.Fatal("expected raw credential-shaped source key reference to be rejected")
+	} else if strings.Contains(err.Error(), unsafeReference) {
+		t.Fatal("validation error must not display rejected key material")
+	}
+	unsafeGroupReference := "Bearer-example-credential"
+	if err := catalog.ApplySourceSnapshot(ctx, SourceCatalogSnapshot{
+		SourceSystem: "litellm", SyncedAt: initial.SyncedAt.Add(2 * time.Minute),
+		Users: initial.Users,
+		Keys:  []SourceAPIKeyInput{{SourceKeyRef: "key-b", SourceUserRef: "user-a", UsageGroupRef: unsafeGroupReference, Active: true}},
+	}); err == nil {
+		t.Fatal("expected credential-shaped usage group reference to be rejected")
+	} else if strings.Contains(err.Error(), unsafeGroupReference) {
+		t.Fatal("validation error must not display rejected usage-group material")
+	}
+	hashReference := strings.Repeat("a", 64)
+	if err := catalog.ApplySourceSnapshot(ctx, SourceCatalogSnapshot{
+		SourceSystem: "litellm", SyncedAt: initial.SyncedAt.Add(3 * time.Minute),
+		Users: initial.Users,
+		Keys:  []SourceAPIKeyInput{{SourceKeyRef: "key-b", SourceUserRef: "user-a", UsageGroupRef: hashReference, Active: true}},
+	}); err == nil {
+		t.Fatal("expected hash-shaped usage group reference to be rejected")
+	} else if strings.Contains(err.Error(), hashReference) {
+		t.Fatal("validation error must not display rejected hash material")
+	}
+	keys, err := catalog.ListActiveSourceAPIKeys(ctx, "litellm")
+	if err != nil || len(keys) != 1 || keys[0].SourceKeyRef != "key-a" {
+		t.Fatalf("unsafe input must not be persisted or returned, got keys=%#v err=%v", keys, err)
+	}
+}
+
 func TestCatalogRepositoryEnforcesIdentityAndSourceCatalogConstraints(t *testing.T) {
 	db := openTestDatabase(t)
 	catalog := NewCatalogRepository(db)
@@ -155,5 +203,15 @@ func TestCatalogRepositoryEnforcesIdentityAndSourceCatalogConstraints(t *testing
 	}
 	if err := db.Create(&entities.IdentitySourceLink{ID: "duplicate-link", ExternalIdentityID: identity.ID, SourceSystem: "litellm", SourceUserID: users[0].ID, MatchMethod: "manual"}).Error; err == nil {
 		t.Fatal("expected one identity/source link constraint")
+	}
+	var otherUser entities.SourceUser
+	if err := db.Where("source_system = ? AND source_user_ref = ?", "other", "user-a").First(&otherUser).Error; err != nil {
+		t.Fatalf("find other-source user: %v", err)
+	}
+	if err := db.Create(&entities.SourceAPIKey{ID: "mismatched-key", SourceSystem: "litellm", SourceKeyRef: "key-b", SourceUserID: otherUser.ID, UsageGroupRef: "group-b", Active: true}).Error; err == nil {
+		t.Fatal("expected source API key source-system ownership constraint")
+	}
+	if err := db.Create(&entities.IdentitySourceLink{ID: "mismatched-link", ExternalIdentityID: identity.ID, SourceSystem: "other", SourceUserID: users[0].ID, MatchMethod: "manual"}).Error; err == nil {
+		t.Fatal("expected identity link source-system ownership constraint")
 	}
 }

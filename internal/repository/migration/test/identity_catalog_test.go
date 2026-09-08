@@ -11,6 +11,7 @@ import (
 )
 
 const identityCatalogMigrationVersion = "20260908_create_identity_catalog"
+const identityCatalogHardeningMigrationVersion = "20260908_harden_identity_catalog"
 
 func TestIdentityCatalogMigrationCreatesSchemaWithForeignKeys(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "legacy.db")+"?_foreign_keys=on"), &gorm.Config{})
@@ -27,6 +28,9 @@ func TestIdentityCatalogMigrationCreatesSchemaWithForeignKeys(t *testing.T) {
 	if err := db.Table("schema_migrations").Where("version = ?", identityCatalogMigrationVersion).Delete(nil).Error; err != nil {
 		t.Fatalf("make catalog migration pending: %v", err)
 	}
+	if err := db.Table("schema_migrations").Where("version = ?", identityCatalogHardeningMigrationVersion).Delete(nil).Error; err != nil {
+		t.Fatalf("make catalog hardening migration pending: %v", err)
+	}
 
 	if err := migration.Run(db); err != nil {
 		t.Fatalf("run identity catalog migration: %v", err)
@@ -38,5 +42,19 @@ func TestIdentityCatalogMigrationCreatesSchemaWithForeignKeys(t *testing.T) {
 	}
 	if err := db.Create(&entities.SourceAPIKey{ID: "key-id", SourceSystem: "litellm", SourceKeyRef: "key-ref", SourceUserID: "missing-user", UsageGroupRef: "group", Active: true}).Error; err == nil {
 		t.Fatal("expected source API key foreign key constraint to reject a missing source user")
+	}
+	otherUser := entities.SourceUser{ID: "other-user", SourceSystem: "other", SourceUserRef: "user-ref", Active: true}
+	if err := db.Create(&otherUser).Error; err != nil {
+		t.Fatalf("create other-source user: %v", err)
+	}
+	if err := db.Create(&entities.SourceAPIKey{ID: "cross-source-key", SourceSystem: "litellm", SourceKeyRef: "key-ref", SourceUserID: otherUser.ID, UsageGroupRef: "group", Active: true}).Error; err == nil {
+		t.Fatal("expected source API key cross-source owner to be rejected")
+	}
+	identity := entities.ExternalIdentity{ID: "identity", Issuer: "issuer", Subject: "subject"}
+	if err := db.Create(&identity).Error; err != nil {
+		t.Fatalf("create external identity: %v", err)
+	}
+	if err := db.Create(&entities.IdentitySourceLink{ID: "cross-source-link", ExternalIdentityID: identity.ID, SourceSystem: "litellm", SourceUserID: otherUser.ID, MatchMethod: "manual"}).Error; err == nil {
+		t.Fatal("expected identity link cross-source owner to be rejected")
 	}
 }
