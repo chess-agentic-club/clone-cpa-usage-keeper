@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 
 const (
 	DefaultTimeZone                  = "Asia/Shanghai"
+	AuthModeStandalone               = "standalone"
+	AuthModeEmbeddedJWT              = "embedded_jwt"
 	publicLoginPasswordPlaceholder   = "replace-with-your-login-password"
 	RedisQueueBatchSizeDefault       = 10000
 	MetadataSyncIntervalDefault      = 30 * time.Second
@@ -111,8 +114,20 @@ type Config struct {
 	LogRetentionDays int
 	// AuthEnabled 控制是否启用登录保护。
 	AuthEnabled bool
+	// AuthMode selects local password sessions or trusted embedded JWTs.
+	AuthMode string
 	// LoginPassword 是启用登录保护时使用的登录密码。
 	LoginPassword string
+	// JWTIssuer is the exact issuer required for embedded JWT assertions.
+	JWTIssuer string
+	// JWTAudience is the audience required for embedded JWT assertions.
+	JWTAudience string
+	// JWKSURL is the trusted endpoint used to obtain JWT verification keys.
+	JWKSURL string
+	// JWTAllowedAlgorithms is restricted to RS256 in embedded JWT mode.
+	JWTAllowedAlgorithms []string
+	// JWTRoleClaim names the claim containing Open WebUI's user/admin role.
+	JWTRoleClaim string
 	// AuthSessionTTL 是登录 session 有效时长。
 	AuthSessionTTL time.Duration
 	// ViewerKeyRevalidationTTL is the maximum age of a successful
@@ -273,6 +288,42 @@ func Load(options LoadOptions) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	authMode := getString("AUTH_MODE", AuthModeStandalone)
+	if authMode != AuthModeStandalone && authMode != AuthModeEmbeddedJWT {
+		return nil, fmt.Errorf("AUTH_MODE must be standalone or embedded_jwt")
+	}
+	jwtIssuer := strings.TrimSpace(os.Getenv("JWT_ISSUER"))
+	jwtAudience := strings.TrimSpace(os.Getenv("JWT_AUDIENCE"))
+	jwksURL := strings.TrimSpace(os.Getenv("JWKS_URL"))
+	jwtAllowedAlgorithmsRaw := strings.TrimSpace(os.Getenv("JWT_ALLOWED_ALGORITHMS"))
+	jwtRoleClaim := strings.TrimSpace(os.Getenv("JWT_ROLE_CLAIM"))
+	jwtAllowedAlgorithms, err := parseNonBlankCSV("JWT_ALLOWED_ALGORITHMS", jwtAllowedAlgorithmsRaw)
+	if err != nil {
+		return nil, err
+	}
+	if authMode == AuthModeEmbeddedJWT {
+		if jwtIssuer == "" {
+			return nil, fmt.Errorf("JWT_ISSUER is required when AUTH_MODE is embedded_jwt")
+		}
+		if jwtAudience == "" {
+			return nil, fmt.Errorf("JWT_AUDIENCE is required when AUTH_MODE is embedded_jwt")
+		}
+		if jwksURL == "" {
+			return nil, fmt.Errorf("JWKS_URL is required when AUTH_MODE is embedded_jwt")
+		}
+		if jwtAllowedAlgorithmsRaw == "" {
+			return nil, fmt.Errorf("JWT_ALLOWED_ALGORITHMS is required when AUTH_MODE is embedded_jwt")
+		}
+		if jwtRoleClaim == "" {
+			return nil, fmt.Errorf("JWT_ROLE_CLAIM is required when AUTH_MODE is embedded_jwt")
+		}
+		if len(jwtAllowedAlgorithms) != 1 || jwtAllowedAlgorithms[0] != "RS256" {
+			return nil, fmt.Errorf("JWT_ALLOWED_ALGORITHMS must be exactly RS256 when AUTH_MODE is embedded_jwt")
+		}
+		if err := validateJWKSURL(jwksURL); err != nil {
+			return nil, err
+		}
+	}
 	trustedProxyCIDRs, err := getCIDRs("TRUSTED_PROXY_CIDRS")
 	if err != nil {
 		return nil, err
@@ -347,7 +398,13 @@ func Load(options LoadOptions) (*Config, error) {
 		LogDir:                          filepath.Join(workDir, workDirLogsName),
 		LogRetentionDays:                logRetentionDays,
 		AuthEnabled:                     authEnabled,
+		AuthMode:                        authMode,
 		LoginPassword:                   strings.TrimSpace(os.Getenv("LOGIN_PASSWORD")),
+		JWTIssuer:                       jwtIssuer,
+		JWTAudience:                     jwtAudience,
+		JWKSURL:                         jwksURL,
+		JWTAllowedAlgorithms:            jwtAllowedAlgorithms,
+		JWTRoleClaim:                    jwtRoleClaim,
 		AuthSessionTTL:                  authSessionTTL,
 		ViewerKeyRevalidationTTL:        viewerKeyRevalidationTTL,
 	}
@@ -366,7 +423,7 @@ func Load(options LoadOptions) (*Config, error) {
 	if cfg.UsageSource == "litellm" && cfg.LiteLLMMasterKey == "" {
 		return nil, fmt.Errorf("LITELLM_MASTER_KEY is required when USAGE_SOURCE is litellm")
 	}
-	if cfg.AuthEnabled {
+	if cfg.AuthEnabled && cfg.AuthMode == AuthModeStandalone {
 		if cfg.LoginPassword == "" && authEnabledValue == "" {
 			return nil, fmt.Errorf("AUTH_ENABLED is not set, so authentication defaults to true; LOGIN_PASSWORD is required")
 		}
@@ -506,6 +563,30 @@ func getString(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func parseNonBlankCSV(key, value string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		candidate := strings.TrimSpace(part)
+		if candidate == "" {
+			return nil, fmt.Errorf("%s must contain non-empty values", key)
+		}
+		result = append(result, candidate)
+	}
+	return result, nil
+}
+
+func validateJWKSURL(raw string) error {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return fmt.Errorf("JWKS_URL must be an absolute HTTP or HTTPS URL without credentials")
+	}
+	return nil
 }
 
 func getCIDRs(key string) ([]string, error) {

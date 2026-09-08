@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/gin-gonic/gin v1.10.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/sirupsen/logrus v1.9.3
