@@ -170,6 +170,10 @@ func TestUsageRecentEventCacheFiltersByMultiKeyScopeFailClosed(t *testing.T) {
 	if !ok || len(empty) != 0 {
 		t.Fatalf("expected empty key set to fail closed, got %+v ok=%v", empty, ok)
 	}
+	unknown, ok := cache.EventsScoped(now.Add(-5*time.Minute), now, false, &UsageScopeFilter{Mode: "unknown", SourceSystem: "litellm"})
+	if !ok || len(unknown) != 0 {
+		t.Fatalf("expected unknown scope mode to fail closed, got %+v ok=%v", unknown, ok)
+	}
 }
 
 func TestUsageRecentEventCacheBuildsCredentialHealthFromStartupAndAppend(t *testing.T) {

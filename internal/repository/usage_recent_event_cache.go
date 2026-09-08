@@ -468,10 +468,10 @@ func recentUsageScopeMatches(event RecentUsageEvent, scope *UsageScopeFilter) bo
 	if source := strings.TrimSpace(scope.SourceSystem); source != "" && strings.TrimSpace(event.SourceSystem) != source {
 		return false
 	}
-	if scope.Mode == UsageScopeAllSource {
+	switch scope.Mode {
+	case UsageScopeAllSource:
 		return true
-	}
-	if scope.Mode == UsageScopeKeySet {
+	case UsageScopeKeySet:
 		keys := normalizeAPIGroupKeys(scope.APIGroupKeys)
 		if len(keys) == 0 {
 			return false
@@ -482,11 +482,14 @@ func recentUsageScopeMatches(event RecentUsageEvent, scope *UsageScopeFilter) bo
 			}
 		}
 		return false
-	}
-	if legacy := strings.TrimSpace(scope.LegacyAPIGroupKey); legacy != "" && event.APIGroupKey != legacy {
+	case "":
+		if legacy := strings.TrimSpace(scope.LegacyAPIGroupKey); legacy != "" && event.APIGroupKey != legacy {
+			return false
+		}
+		return true
+	default:
 		return false
 	}
-	return true
 }
 
 // Window 返回缓存保留时长，供调用方用自己的 queryNow 判断覆盖范围。
