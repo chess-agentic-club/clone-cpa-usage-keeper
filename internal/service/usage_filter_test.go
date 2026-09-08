@@ -22,6 +22,123 @@ func emptyPricingCatalogForTest() *pricing.Catalog {
 	return pricing.NewCatalog(pricing.EmptySnapshot())
 }
 
+func TestUsageServiceMultiKeyScopeAndEmptyScope(t *testing.T) {
+	previousLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = previousLocal })
+
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-service-multi-key-scope.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-time.Hour)
+	end := now
+	generate := true
+	ttftA, ttftB, ttftC := int64(10), int64(20), int64(90)
+	events := []entities.UsageEvent{
+		{EventKey: "scope-a", APIGroupKey: "litellm:key-a", SourceSystem: "litellm", Model: "model-a", Timestamp: now.Add(-40 * time.Minute), TotalTokens: 10, Generate: &generate, TTFTMS: &ttftA, LatencyMS: 100},
+		{EventKey: "scope-b", APIGroupKey: "litellm:key-b", SourceSystem: "litellm", Model: "model-b", Timestamp: now.Add(-30 * time.Minute), TotalTokens: 20, Generate: &generate, TTFTMS: &ttftB, LatencyMS: 200},
+		{EventKey: "scope-c", APIGroupKey: "litellm:key-c", SourceSystem: "litellm", Model: "model-c", Timestamp: now.Add(-20 * time.Minute), TotalTokens: 900, Generate: &generate, TTFTMS: &ttftC, LatencyMS: 900},
+	}
+	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
+		t.Fatalf("InsertUsageEvents returned error: %v", err)
+	}
+	if err := db.Create(&[]entities.UsageAPIKeyIdentity{{SourceSystem: "litellm", APIGroupKey: "litellm:key-a"}, {SourceSystem: "litellm", APIGroupKey: "litellm:key-b"}}).Error; err != nil {
+		t.Fatalf("seed usage key identities: %v", err)
+	}
+	if err := repository.AggregateUsageOverviewStats(context.Background(), db, now); err != nil {
+		t.Fatalf("AggregateUsageOverviewStats returned error: %v", err)
+	}
+	if err := repository.AggregateUsageActivityStats(context.Background(), db, now); err != nil {
+		t.Fatalf("AggregateUsageActivityStats returned error: %v", err)
+	}
+	if err := repository.AggregateUsageLatencyStats(context.Background(), db, now); err != nil {
+		t.Fatalf("AggregateUsageLatencyStats returned error: %v", err)
+	}
+
+	svc := NewUsageService(db, emptyPricingCatalogForTest())
+	own := &servicedto.UsageScope{Mode: servicedto.UsageScopeKeySet, SourceSystem: "litellm", APIGroupKeys: []string{"litellm:key-a", "litellm:key-b", "litellm:key-a", "  "}}
+	filter := servicedto.UsageFilter{Range: "custom", CustomUnit: "hour", StartTime: &start, EndTime: &end, EndExclusive: true, Scope: own}
+
+	overview, err := svc.GetUsageOverview(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("GetUsageOverview returned error: %v", err)
+	}
+	if overview.Usage == nil || overview.Usage.TotalTokens != 30 {
+		t.Fatalf("expected scoped overview total 30, got %+v", overview.Usage)
+	}
+	analysis, err := svc.GetAnalysis(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("GetAnalysis returned error: %v", err)
+	}
+	if len(analysis.ModelComposition) != 2 || analysis.ModelComposition[0].TotalTokens+analysis.ModelComposition[1].TotalTokens != 30 {
+		t.Fatalf("expected two scoped analysis models totaling 30, got %+v", analysis.ModelComposition)
+	}
+	realtime, err := svc.GetUsageOverviewRealtime(context.Background(), servicedto.UsageFilter{RealtimeWindow: "60m", RealtimeEndTime: &end, Scope: own})
+	if err != nil {
+		t.Fatalf("GetUsageOverviewRealtime returned error: %v", err)
+	}
+	var realtimeTokens int64
+	for _, point := range realtime.CurrentUsage.Models {
+		realtimeTokens += point.Tokens
+	}
+	if realtimeTokens != 30 {
+		t.Fatalf("expected scoped realtime current usage total 30, got %d", realtimeTokens)
+	}
+	activity, err := svc.GetUsageActivity(context.Background(), servicedto.UsageFilter{ActivityWindow: servicedto.UsageActivityWindowDay, QueryNow: &now, Scope: own})
+	if err != nil {
+		t.Fatalf("GetUsageActivity returned error: %v", err)
+	}
+	if activity.TotalTokens != 30 {
+		t.Fatalf("expected scoped activity total 30, got %d", activity.TotalTokens)
+	}
+	latency, err := svc.GetAnalysisLatency(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("GetAnalysisLatency returned error: %v", err)
+	}
+	if latency.TotalPoints != 2 {
+		t.Fatalf("expected scoped latency points 2, got %+v", latency)
+	}
+	emptyScope := &servicedto.UsageScope{Mode: servicedto.UsageScopeKeySet, SourceSystem: "litellm"}
+	emptyOverview, err := svc.GetUsageOverview(context.Background(), servicedto.UsageFilter{Range: "custom", CustomUnit: "hour", StartTime: &start, EndTime: &end, EndExclusive: true, Scope: emptyScope})
+	if err != nil {
+		t.Fatalf("GetUsageOverview empty scope returned error: %v", err)
+	}
+	if emptyOverview.Usage == nil || emptyOverview.Usage.TotalTokens != 0 {
+		t.Fatalf("expected empty scoped overview, got %+v", emptyOverview.Usage)
+	}
+	emptyAnalysis, err := svc.GetAnalysis(context.Background(), servicedto.UsageFilter{Range: "custom", CustomUnit: "hour", StartTime: &start, EndTime: &end, EndExclusive: true, Scope: emptyScope})
+	if err != nil {
+		t.Fatalf("GetAnalysis empty scope returned error: %v", err)
+	}
+	if len(emptyAnalysis.ModelComposition) != 0 {
+		t.Fatalf("expected empty scoped analysis, got %+v", emptyAnalysis.ModelComposition)
+	}
+	all, err := svc.GetUsageOverview(context.Background(), servicedto.UsageFilter{Range: "custom", CustomUnit: "hour", StartTime: &start, EndTime: &end, EndExclusive: true, Scope: &servicedto.UsageScope{Mode: servicedto.UsageScopeAllSource, SourceSystem: "litellm"}})
+	if err != nil {
+		t.Fatalf("GetUsageOverview all source returned error: %v", err)
+	}
+	if all.Usage == nil || all.Usage.TotalTokens != 930 {
+		t.Fatalf("expected all-source overview total 930, got %+v", all.Usage)
+	}
+	foreignStart := now.Add(-10 * time.Minute)
+	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{EventKey: "scope-foreign-raw", APIGroupKey: "litellm:key-a", SourceSystem: "foreign", Model: "foreign-model", Timestamp: now.Add(-5 * time.Minute), TotalTokens: 700}}); err != nil {
+		t.Fatalf("insert foreign raw event: %v", err)
+	}
+	rawScoped, err := svc.GetUsageOverview(context.Background(), servicedto.UsageFilter{Range: "custom", CustomUnit: "hour", StartTime: &foreignStart, EndTime: &end, EndExclusive: true, Scope: own})
+	if err != nil {
+		t.Fatalf("GetUsageOverview raw source scope returned error: %v", err)
+	}
+	if rawScoped.Usage == nil || rawScoped.Usage.TotalTokens != 0 {
+		t.Fatalf("expected raw source filter to exclude foreign event, got %+v", rawScoped.Usage)
+	}
+	if _, err := svc.GetUsageOverview(context.Background(), servicedto.UsageFilter{Range: "custom", CustomUnit: "hour", StartTime: &start, EndTime: &end, Scope: &servicedto.UsageScope{Mode: "unknown", SourceSystem: "litellm"}}); err == nil {
+		t.Fatal("expected unknown usage scope mode to error")
+	}
+}
+
 func TestUsageServiceGetUsageOverviewDelegatesToFilteredOverview(t *testing.T) {
 	previousLocal := time.Local
 	location, err := time.LoadLocation("Asia/Shanghai")

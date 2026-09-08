@@ -78,10 +78,27 @@ func (s *usageService) resolveAPIGroupKey(ctx context.Context, apiKeyID string) 
 }
 
 func (s *usageService) resolveAPIGroupKeyForFilter(ctx context.Context, filter servicedto.UsageFilter) (string, error) {
+	if filter.Scope != nil {
+		return "", nil
+	}
 	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
 		return apiGroupKey, nil
 	}
 	return s.resolveAPIGroupKey(ctx, filter.APIKeyID)
+}
+
+func mapUsageScope(scope *servicedto.UsageScope) *repodto.UsageScope {
+	if scope == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(scope.APIGroupKeys))
+	for _, key := range scope.APIGroupKeys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return &repodto.UsageScope{Mode: repodto.UsageScopeMode(scope.Mode), SourceSystem: strings.TrimSpace(scope.SourceSystem), APIGroupKeys: keys}
 }
 
 // Usage 页面里的 Overview tab 下传时间窗口和全局 API-Key，仓储层负责构建 overview 聚合。
@@ -99,6 +116,7 @@ func (s *usageService) GetUsageOverview(ctx context.Context, filter servicedto.U
 		EndExclusive: filter.EndExclusive,
 		QueryNow:     filter.QueryNow,
 		APIGroupKey:  apiGroupKey,
+		Scope:        mapUsageScope(filter.Scope),
 	}, s.recentUsage, s.pricing.NewResolver())
 	if err != nil {
 		return nil, err
@@ -153,7 +171,7 @@ func (s *usageService) GetUsageActivity(ctx context.Context, filter servicedto.U
 		// Today/Yesterday 只改变网格终点，仍复用普通 Activity 聚合查询。
 		referenceEnd = filter.StartTime.AddDate(0, 0, 1)
 	}
-	grid, err := repository.QueryUsageActivityGrid(ctx, s.db, grain, referenceEnd, dataEnd, apiGroupKey)
+	grid, err := repository.QueryUsageActivityGridWithFilter(ctx, s.db, grain, referenceEnd, dataEnd, repodto.UsageQueryFilter{APIGroupKey: apiGroupKey, Scope: mapUsageScope(filter.Scope)})
 	if err != nil {
 		return nil, err
 	}
@@ -265,6 +283,7 @@ func (s *usageService) GetUsageOverviewRealtime(ctx context.Context, filter serv
 		RealtimeWindow:  filter.RealtimeWindow,
 		RealtimeEndTime: filter.RealtimeEndTime,
 		APIGroupKey:     apiGroupKey,
+		Scope:           mapUsageScope(filter.Scope),
 	}, s.recentUsage, s.pricing.NewResolver())
 	if err != nil {
 		return nil, err
@@ -505,6 +524,7 @@ func (s *usageService) GetAnalysis(ctx context.Context, filter servicedto.UsageF
 		EndTime:      filter.EndTime,
 		EndExclusive: filter.EndExclusive,
 		APIGroupKey:  apiGroupKey,
+		Scope:        mapUsageScope(filter.Scope),
 	}, s.pricing.NewResolver())
 	if err != nil {
 		return nil, err
@@ -525,6 +545,7 @@ func (s *usageService) GetAnalysisLatency(ctx context.Context, filter servicedto
 		EndTime:      filter.EndTime,
 		EndExclusive: filter.EndExclusive,
 		APIGroupKey:  apiGroupKey,
+		Scope:        mapUsageScope(filter.Scope),
 	})
 	if err != nil {
 		return nil, err
@@ -706,6 +727,7 @@ func (s *usageService) ListUsageEvents(ctx context.Context, filter servicedto.Us
 		AuthIndex:       filter.AuthIndex,
 		AuthType:        filter.AuthType,
 		APIGroupKey:     apiGroupKey,
+		Scope:           mapUsageScope(filter.Scope),
 		Result:          filter.Result,
 	}, s.pricing.NewResolver())
 	if err != nil {
@@ -766,6 +788,7 @@ func (s *usageService) StreamUsageEvents(ctx context.Context, filter servicedto.
 		AuthIndex:    filter.AuthIndex,
 		AuthType:     filter.AuthType,
 		APIGroupKey:  apiGroupKey,
+		Scope:        mapUsageScope(filter.Scope),
 		Result:       filter.Result,
 	}, func(row repodto.UsageEventRecord) error {
 		return emit(servicedto.UsageEventRecord{
@@ -817,6 +840,7 @@ func (s *usageService) ListUsageEventFilterOptions(ctx context.Context, filter s
 		EndTime:      filter.EndTime,
 		EndExclusive: filter.EndExclusive,
 		APIGroupKey:  apiGroupKey,
+		Scope:        mapUsageScope(filter.Scope),
 	})
 	if err != nil {
 		return nil, err

@@ -41,7 +41,9 @@ type UsageFilter struct {
 	// takes precedence over the user-controlled APIKeyID filter.
 	APIGroupKey string
 	APIKeyID    string
-	Result      string
+	// Scope is a server-resolved, fail-closed multi-key usage scope.
+	Scope  *UsageScope
+	Result string
 }
 
 // UsageEventsPage 是 usage events 列表的服务层结果。

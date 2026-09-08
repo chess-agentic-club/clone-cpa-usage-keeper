@@ -152,6 +152,26 @@ func TestUsageRecentEventCacheFiltersByWindowAndAPIGroupKey(t *testing.T) {
 	}
 }
 
+func TestUsageRecentEventCacheFiltersByMultiKeyScopeFailClosed(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	cache := newEmptyUsageRecentEventCache(UsageRecentEventCacheOptions{Now: func() time.Time { return now }})
+	t.Cleanup(cache.Close)
+	cache.appendEvents([]entities.UsageEvent{
+		{APIGroupKey: "litellm:key-a", SourceSystem: "litellm", Timestamp: now.Add(-3 * time.Minute), TotalTokens: 10},
+		{APIGroupKey: "litellm:key-b", SourceSystem: "litellm", Timestamp: now.Add(-2 * time.Minute), TotalTokens: 20},
+		{APIGroupKey: "litellm:key-c", SourceSystem: "litellm", Timestamp: now.Add(-time.Minute), TotalTokens: 900},
+		{APIGroupKey: "litellm:key-a", SourceSystem: "foreign", Timestamp: now.Add(-time.Minute), TotalTokens: 700},
+	})
+	matched, ok := cache.EventsScoped(now.Add(-5*time.Minute), now, false, &UsageScopeFilter{Mode: UsageScopeKeySet, SourceSystem: "litellm", APIGroupKeys: []string{"litellm:key-a", "litellm:key-b"}})
+	if !ok || len(matched) != 2 || matched[0].TotalTokens+matched[1].TotalTokens != 30 {
+		t.Fatalf("expected two source-scoped cached events totaling 30, got %+v ok=%v", matched, ok)
+	}
+	empty, ok := cache.EventsScoped(now.Add(-5*time.Minute), now, false, &UsageScopeFilter{Mode: UsageScopeKeySet, SourceSystem: "litellm"})
+	if !ok || len(empty) != 0 {
+		t.Fatalf("expected empty key set to fail closed, got %+v ok=%v", empty, ok)
+	}
+}
+
 func TestUsageRecentEventCacheBuildsCredentialHealthFromStartupAndAppend(t *testing.T) {
 	withRepositoryTestLocation(t, "Asia/Shanghai")
 	db, err := OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "credential-health-cache.db")})

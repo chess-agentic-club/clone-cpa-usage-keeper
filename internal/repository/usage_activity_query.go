@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
@@ -22,11 +21,22 @@ const (
 
 // QueryUsageActivityGrid 按 grain 生成固定 364 格，并用 dataEnd 限制尚未开始的未来桶。
 func QueryUsageActivityGrid(ctx context.Context, db *gorm.DB, grain entities.UsageActivityGrain, referenceEnd, dataEnd time.Time, apiGroupKey string) (dto.UsageActivityGridRecord, error) {
+	return queryUsageActivityGrid(ctx, db, grain, referenceEnd, dataEnd, dto.UsageQueryFilter{APIGroupKey: apiGroupKey})
+}
+
+func QueryUsageActivityGridWithFilter(ctx context.Context, db *gorm.DB, grain entities.UsageActivityGrain, referenceEnd, dataEnd time.Time, filter dto.UsageQueryFilter) (dto.UsageActivityGridRecord, error) {
+	return queryUsageActivityGrid(ctx, db, grain, referenceEnd, dataEnd, filter)
+}
+
+func queryUsageActivityGrid(ctx context.Context, db *gorm.DB, grain entities.UsageActivityGrain, referenceEnd, dataEnd time.Time, filter dto.UsageQueryFilter) (dto.UsageActivityGridRecord, error) {
 	// result 先记录请求 grain，错误路径也能保留调用上下文。
 	result := dto.UsageActivityGridRecord{Grain: grain}
 	// nil 数据库无法读取 Activity rows。
 	if db == nil {
 		return result, fmt.Errorf("database is nil")
+	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return result, err
 	}
 	// nil context 统一降级为 Background，避免 GORM WithContext panic。
 	if ctx == nil {
@@ -78,9 +88,7 @@ func QueryUsageActivityGrid(ctx context.Context, db *gorm.DB, grain entities.Usa
 	query := db.WithContext(ctx).
 		Where("grain = ? AND bucket_start IN ?", grain, bucketStarts)
 	// API group 非空时按 canonical key 精确过滤，与 CPA API Key scope 一致。
-	if normalizedAPIGroupKey := strings.TrimSpace(apiGroupKey); normalizedAPIGroupKey != "" {
-		query = query.Where("api_group_key = ?", normalizedAPIGroupKey)
-	}
+	query = applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
 	// 使用完整 entity 读取数据库保存的 bucket_end 和全部 canonical Activity 字段。
 	var rows []entities.UsageActivityStat
 	// 查询失败必须阻止返回半完整 Activity 网格。

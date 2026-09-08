@@ -7,8 +7,16 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
+	repodto "cpa-usage-keeper/internal/repository/dto"
 	"cpa-usage-keeper/internal/timeutil"
 	"gorm.io/gorm"
+)
+
+type UsageScopeMode = repodto.UsageScopeMode
+
+const (
+	UsageScopeKeySet    = repodto.UsageScopeKeySet
+	UsageScopeAllSource = repodto.UsageScopeAllSource
 )
 
 const (
@@ -35,7 +43,8 @@ type RecentUsageEvent struct {
 	// Timestamp 是事件时间，所有入缓存路径都会先归一化到项目配置时区。
 	Timestamp time.Time
 	// APIGroupKey 保留 Overview / KeyOverview 的 API Key 作用域过滤条件。
-	APIGroupKey string
+	APIGroupKey  string
+	SourceSystem string
 	// Model 用于 realtime 当前模型占比和 cost 价格表匹配。
 	Model string
 	// ModelAlias 保留 CPA 上报的请求来源别名，真实 Model 缺价时可用于价格回退。
@@ -110,6 +119,7 @@ type UsageRecentEventCache struct {
 type recentUsageEventLoadRow struct {
 	// 这个结构只列出缓存真正需要的列，避免启动加载把 usage_events 大字段读进内存。
 	APIGroupKey         string
+	SourceSystem        string
 	Provider            string
 	AuthType            string
 	Model               string
@@ -322,10 +332,10 @@ func (c *UsageRecentEventCache) appendEvents(events []entities.UsageEvent) {
 	for _, event := range events {
 		// 这里刻意不带 event_key/request_id，它们不参与 Overview/realtime 计算。
 		rows = append(rows, recentUsageEventLoadRow{
-			APIGroupKey: event.APIGroupKey,
-			Provider:    event.Provider,
-			AuthType:    event.AuthType,
-			Model:       event.Model,
+			APIGroupKey: event.APIGroupKey, SourceSystem: event.SourceSystem,
+			Provider: event.Provider,
+			AuthType: event.AuthType,
+			Model:    event.Model,
 			ModelAlias: func() string {
 				if event.ModelAlias == nil {
 					return ""
@@ -366,6 +376,17 @@ func (c *UsageRecentEventCache) appendEvents(events []entities.UsageEvent) {
 
 // Events 返回缓存中落在指定窗口内的事件；覆盖判断由调用方按 queryNow 统一调度。
 func (c *UsageRecentEventCache) Events(start, end time.Time, includeEnd bool, apiGroupKey string) ([]RecentUsageEvent, bool) {
+	return c.EventsScoped(start, end, includeEnd, &UsageScopeFilter{LegacyAPIGroupKey: apiGroupKey})
+}
+
+type UsageScopeFilter struct {
+	Mode              UsageScopeMode
+	SourceSystem      string
+	APIGroupKeys      []string
+	LegacyAPIGroupKey string
+}
+
+func (c *UsageRecentEventCache) EventsScoped(start, end time.Time, includeEnd bool, scope *UsageScopeFilter) ([]RecentUsageEvent, bool) {
 	// nil cache 表示缓存对象不可用，调用方可以按自己的策略 fallback。
 	if c == nil {
 		return nil, false
@@ -381,7 +402,6 @@ func (c *UsageRecentEventCache) Events(start, end time.Time, includeEnd bool, ap
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	// API Group 过滤在缓存内完成，KeyOverview 和 Overview 共用同一份缓存。
-	apiGroupKey = strings.TrimSpace(apiGroupKey)
 	result := make([]RecentUsageEvent, 0)
 	for _, event := range c.events {
 		// 每条事件再归一化一次，防止测试直接构造的时间没有走入库规范化。
@@ -399,7 +419,7 @@ func (c *UsageRecentEventCache) Events(start, end time.Time, includeEnd bool, ap
 			continue
 		}
 		// 有 API Key 限定时，只返回对应 API Group 的事件。
-		if apiGroupKey != "" && event.APIGroupKey != apiGroupKey {
+		if !recentUsageScopeMatches(event, scope) {
 			continue
 		}
 		// 返回副本，避免调用方修改 TTFT 指针影响缓存内部状态。
@@ -410,6 +430,10 @@ func (c *UsageRecentEventCache) Events(start, end time.Time, includeEnd bool, ap
 
 // EventsSince 返回从 start 起的缓存事件，供 Overview 当前右边界规避 now/end 轻微漂移。
 func (c *UsageRecentEventCache) EventsSince(start time.Time, apiGroupKey string) ([]RecentUsageEvent, bool) {
+	return c.EventsSinceScoped(start, &UsageScopeFilter{LegacyAPIGroupKey: apiGroupKey})
+}
+
+func (c *UsageRecentEventCache) EventsSinceScoped(start time.Time, scope *UsageScopeFilter) ([]RecentUsageEvent, bool) {
 	// nil cache 表示缓存对象不可用，Overview 当前右边界可回到 DB 旧路径。
 	if c == nil {
 		return nil, false
@@ -420,7 +444,6 @@ func (c *UsageRecentEventCache) EventsSince(start time.Time, apiGroupKey string)
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	// API Group 过滤在缓存层完成。
-	apiGroupKey = strings.TrimSpace(apiGroupKey)
 	result := make([]RecentUsageEvent, 0)
 	for _, event := range c.events {
 		// 当前右边界只要求 timestamp >= start，不添加 end 上限。
@@ -429,13 +452,41 @@ func (c *UsageRecentEventCache) EventsSince(start time.Time, apiGroupKey string)
 			continue
 		}
 		// KeyOverview 只读取当前 API Key 对应的事件。
-		if apiGroupKey != "" && event.APIGroupKey != apiGroupKey {
+		if !recentUsageScopeMatches(event, scope) {
 			continue
 		}
 		// 返回副本，避免外部修改指针字段污染缓存。
 		result = append(result, cloneRecentUsageEvent(event))
 	}
 	return result, true
+}
+
+func recentUsageScopeMatches(event RecentUsageEvent, scope *UsageScopeFilter) bool {
+	if scope == nil {
+		return true
+	}
+	if source := strings.TrimSpace(scope.SourceSystem); source != "" && strings.TrimSpace(event.SourceSystem) != source {
+		return false
+	}
+	if scope.Mode == UsageScopeAllSource {
+		return true
+	}
+	if scope.Mode == UsageScopeKeySet {
+		keys := normalizeAPIGroupKeys(scope.APIGroupKeys)
+		if len(keys) == 0 {
+			return false
+		}
+		for _, key := range keys {
+			if event.APIGroupKey == key {
+				return true
+			}
+		}
+		return false
+	}
+	if legacy := strings.TrimSpace(scope.LegacyAPIGroupKey); legacy != "" && event.APIGroupKey != legacy {
+		return false
+	}
+	return true
 }
 
 // Window 返回缓存保留时长，供调用方用自己的 queryNow 判断覆盖范围。
@@ -452,7 +503,7 @@ func loadUsageRecentEventCacheRows(db *gorm.DB, start time.Time) ([]recentUsageE
 	var rows []recentUsageEventLoadRow
 	// 只 select 最近缓存和 realtime 必需字段，避免大字段进入 70 分钟内存窗口。
 	if err := db.Model(&entities.UsageEvent{}).
-		Select("api_group_key, provider, auth_type, model, model_alias, timestamp, source, auth_index, service_tier, response_service_tier, reasoning_effort, endpoint, executor_type, failed, generate, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens").
+		Select("api_group_key, source_system, provider, auth_type, model, model_alias, timestamp, source, auth_index, service_tier, response_service_tier, reasoning_effort, endpoint, executor_type, failed, generate, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens").
 		// 启动加载只取 retention 左边界之后的数据。
 		Where("timestamp >= ?", timeutil.FormatStorageTime(start)).
 		// 按时间排序让后续剪枝和调试输出更直观。
@@ -480,6 +531,7 @@ func (c *UsageRecentEventCache) recentEventFromRowLocked(row recentUsageEventLoa
 		Timestamp: timeutil.NormalizeStorageTime(row.Timestamp),
 		// 高频重复字符串通过池化复用，降低缓存内存占用。
 		APIGroupKey:           c.pool.intern(strings.TrimSpace(row.APIGroupKey)),
+		SourceSystem:          c.pool.intern(strings.TrimSpace(row.SourceSystem)),
 		Model:                 c.pool.intern(strings.TrimSpace(row.Model)),
 		ModelAlias:            c.pool.intern(strings.TrimSpace(row.ModelAlias)),
 		AuthIndex:             c.pool.intern(strings.TrimSpace(row.AuthIndex)),
@@ -529,6 +581,7 @@ func (c *UsageRecentEventCache) pruneLocked(now time.Time) {
 func (c *UsageRecentEventCache) releaseEventStringsLocked(event RecentUsageEvent) {
 	// 每个池化字段都按引用计数释放，计数归零后才删除底层字符串。
 	c.pool.release(event.APIGroupKey)
+	c.pool.release(event.SourceSystem)
 	c.pool.release(event.Model)
 	c.pool.release(event.ModelAlias)
 	c.pool.release(event.AuthIndex)
@@ -635,6 +688,7 @@ func recentUsageEventToEntity(event RecentUsageEvent) entities.UsageEvent {
 	generate := event.Generate
 	result := entities.UsageEvent{
 		APIGroupKey:         event.APIGroupKey,
+		SourceSystem:        event.SourceSystem,
 		Model:               event.Model,
 		Timestamp:           event.Timestamp,
 		AuthIndex:           event.AuthIndex,

@@ -52,8 +52,10 @@ func BuildAnalysisLatencyDiagnosticsWithFilter(db *gorm.DB, filter dto.UsageQuer
 	var rows []entities.UsageLatencyStat
 	query := db.Clauses(dbresolver.Read).
 		Where("bucket_type = ? AND bucket_start >= ? AND bucket_start < ?", bucketType, timeutil.FormatStorageTime(alignedStart), timeutil.FormatStorageTime(alignedEnd))
-	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
-		query = query.Where("api_group_key = ?", apiGroupKey)
+	var scopeErr error
+	query, scopeErr = applyAPIGroupScope(query, filter.Scope, filter.APIGroupKey)
+	if scopeErr != nil {
+		return empty, scopeErr
 	}
 	if err := query.Order("bucket_start ASC").Find(&rows).Error; err != nil {
 		return empty, fmt.Errorf("load analysis latency rollups: %w", err)

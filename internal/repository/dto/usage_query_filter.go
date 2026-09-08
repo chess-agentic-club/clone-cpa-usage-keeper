@@ -2,6 +2,19 @@ package dto
 
 import "time"
 
+type UsageScopeMode string
+
+const (
+	UsageScopeKeySet    UsageScopeMode = "key_set"
+	UsageScopeAllSource UsageScopeMode = "all_source"
+)
+
+type UsageScope struct {
+	Mode         UsageScopeMode
+	SourceSystem string
+	APIGroupKeys []string
+}
+
 // UsageQueryFilter 是仓储层的 usage 查询条件。
 type UsageQueryFilter struct {
 	Range        string
@@ -25,6 +38,7 @@ type UsageQueryFilter struct {
 	AuthIndex       string
 	AuthType        string
 	APIGroupKey     string
+	Scope           *UsageScope
 	Result          string
 }
 

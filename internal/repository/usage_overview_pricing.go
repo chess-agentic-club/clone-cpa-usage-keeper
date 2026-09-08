@@ -83,9 +83,7 @@ func loadUsageOverviewStatProjection(query *gorm.DB, filter dto.UsageQueryFilter
 	query = query.
 		Select(selectColumns).
 		Where("bucket_start >= ? AND bucket_start < ?", timeutil.FormatStorageTime(start), timeutil.FormatStorageTime(end))
-	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
-		query = query.Where("api_group_key = ?", apiGroupKey)
-	}
+	query = applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
 	if err := query.Group(strings.Join(dimensionColumns, ", ")).Order("bucket_start asc").Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load usage overview %s projection: %w", grain, err)
 	}

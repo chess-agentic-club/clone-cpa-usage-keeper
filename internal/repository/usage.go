@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -14,6 +15,80 @@ import (
 	"cpa-usage-keeper/internal/timeutil"
 	"gorm.io/gorm"
 )
+
+var ErrInvalidUsageScope = errors.New("invalid usage scope")
+
+func normalizeAPIGroupKeys(keys []string) []string {
+	result := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}
+
+// applyAPIGroupScope is the single repository scope predicate. A non-nil
+// key_set scope with no keys is deliberately fail-closed.
+func applyAPIGroupScope(query *gorm.DB, scope *dto.UsageScope, legacyKey string) (*gorm.DB, error) {
+	if scope == nil {
+		if key := strings.TrimSpace(legacyKey); key != "" {
+			query = query.Where("api_group_key = ?", key)
+		}
+		return query, nil
+	}
+	switch scope.Mode {
+	case dto.UsageScopeAllSource:
+		return query, nil
+	case dto.UsageScopeKeySet:
+		keys := normalizeAPIGroupKeys(scope.APIGroupKeys)
+		if len(keys) == 0 {
+			return query.Where("1 = 0"), nil
+		}
+		return query.Where("api_group_key IN ?", keys), nil
+	default:
+		return nil, ErrInvalidUsageScope
+	}
+}
+
+func validateUsageScope(scope *dto.UsageScope) error {
+	if scope == nil {
+		return nil
+	}
+	if scope.Mode != dto.UsageScopeKeySet && scope.Mode != dto.UsageScopeAllSource {
+		return ErrInvalidUsageScope
+	}
+	return nil
+}
+
+func scopeSourceSystem(scope *dto.UsageScope) string {
+	if scope == nil {
+		return ""
+	}
+	return strings.TrimSpace(scope.SourceSystem)
+}
+
+func recentUsageScopeFilter(scope *dto.UsageScope, legacy string) *UsageScopeFilter {
+	if scope == nil {
+		return &UsageScopeFilter{LegacyAPIGroupKey: legacy}
+	}
+	return &UsageScopeFilter{Mode: scope.Mode, SourceSystem: scope.SourceSystem, APIGroupKeys: normalizeAPIGroupKeys(scope.APIGroupKeys)}
+}
+
+func applyUsageScopeFilter(query *gorm.DB, scope *dto.UsageScope, legacyKey string) *gorm.DB {
+	filtered, err := applyAPIGroupScope(query, scope, legacyKey)
+	if err != nil {
+		return query.Where("1 = 0")
+	}
+	return filtered
+}
 
 // usageEventProjectionColumns 限制 usage_events 查询列，避免 Overview 和列表页把 RawJSON 等大字段读入内存。
 const usageEventProjectionColumns = "id, api_group_key, provider, auth_type, request_id, client_ip, x_forwarded_for, user_agent, model, model_alias, reasoning_effort, service_tier, response_service_tier, executor_type, endpoint, timestamp, source, auth_index, failed, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, cost_usd, cost_source"
@@ -62,6 +137,9 @@ type usageEventProjection struct {
 func ListUsageEventsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, costResolver pricing.Resolver) (*dto.UsageEventsPageRecord, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database is nil")
+	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return nil, err
 	}
 
 	baseQuery := queryUsageEvents(db)
@@ -146,6 +224,9 @@ func StreamUsageEventsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, emit 
 	if db == nil {
 		return fmt.Errorf("database is nil")
 	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return err
+	}
 	query := applyUsageEventListQuery(db.Model(&entities.UsageEvent{}), filter)
 	query = query.Select(usageEventProjectionColumns).Order("timestamp DESC, id DESC")
 	return streamUsageEventRecordsForQuery(db, query, emit, costResolver)
@@ -155,6 +236,9 @@ func StreamUsageEventsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, emit 
 func ListUsageEventFilterOptionsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter) (*dto.UsageEventFilterOptionsRecord, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database is nil")
+	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return nil, err
 	}
 	models, err := listUsageEventModelFilterOptions(db, filter)
 	if err != nil {
@@ -347,31 +431,31 @@ func applyUsageQueryWindow(query *gorm.DB, filter dto.UsageQueryFilter) *gorm.DB
 // Overview Tab 第一步：应用时间窗口和全局 API-Key 条件，后续 Overview 专属条件也从这里加。
 func applyUsageOverviewQuery(query *gorm.DB, filter dto.UsageQueryFilter) *gorm.DB {
 	query = applyUsageQueryWindow(query, filter)
-	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
-		query = query.Where("api_group_key = ?", apiGroupKey)
-	}
-	return query
+	return applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
 }
 
 // Analysis Tab 第一步：应用时间窗口和全局 API-Key 条件，避免 Request Event Log 的筛选污染聚合。
 func applyUsageAnalysisTabQuery(query *gorm.DB, filter dto.UsageQueryFilter) *gorm.DB {
 	query = applyUsageQueryWindow(query, filter)
-	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
-		query = query.Where("api_group_key = ?", apiGroupKey)
-	}
-	return query
+	return applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
 }
 
 // Request Event Log 筛选项第一步：只应用时间窗口，不叠加当前列表筛选。
 func applyUsageEventFilterOptionsQuery(query *gorm.DB, filter dto.UsageQueryFilter) *gorm.DB {
-	return applyUsageQueryWindow(query, filter)
+	query = applyUsageQueryWindow(query, filter)
+	query = applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
+	if source := scopeSourceSystem(filter.Scope); source != "" {
+		query = query.Where("source_system = ?", source)
+	}
+	return query
 }
 
 // Request Event Log 列表第一步：在时间窗口上叠加 model/auth_index/result。
 func applyUsageEventListQuery(query *gorm.DB, filter dto.UsageQueryFilter) *gorm.DB {
 	query = applyUsageQueryWindow(query, filter)
-	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
-		query = query.Where("api_group_key = ?", apiGroupKey)
+	query = applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
+	if source := scopeSourceSystem(filter.Scope); source != "" {
+		query = query.Where("source_system = ?", source)
 	}
 	if model := strings.TrimSpace(filter.Model); model != "" {
 		query = query.Where("model = ?", model)
@@ -395,6 +479,9 @@ func applyUsageEventListQuery(query *gorm.DB, filter dto.UsageQueryFilter) *gorm
 func BuildAnalysisWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, costResolver pricing.Resolver) (*dto.AnalysisRecord, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database is nil")
+	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return nil, err
 	}
 	if filter.StartTime == nil || filter.EndTime == nil {
 		return nil, fmt.Errorf("analysis requires start_time and end_time")
@@ -832,6 +919,9 @@ func BuildUsageOverviewWithFilterAndRecentCache(db *gorm.DB, filter dto.UsageQue
 	if db == nil {
 		return nil, fmt.Errorf("database is nil")
 	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return nil, err
+	}
 
 	// Overview 页面现在必须先由 API 层把 4h/8h/custom 等 range 解析成具体时间窗口。
 	if filter.StartTime == nil || filter.EndTime == nil {
@@ -854,6 +944,9 @@ func BuildUsageOverviewRealtimeWithFilter(db *gorm.DB, filter dto.UsageQueryFilt
 func BuildUsageOverviewRealtimeWithFilterAndRecentCache(db *gorm.DB, filter dto.UsageQueryFilter, recentCache *UsageRecentEventCache, costResolver pricing.Resolver) (dto.UsageOverviewRealtimeRecord, error) {
 	if db == nil {
 		return dto.UsageOverviewRealtimeRecord{}, fmt.Errorf("database is nil")
+	}
+	if err := validateUsageScope(filter.Scope); err != nil {
+		return dto.UsageOverviewRealtimeRecord{}, err
 	}
 	return buildUsageOverviewRealtime(db, filter, costResolver, recentCache)
 }
@@ -1182,10 +1275,10 @@ func loadUsageOverviewRawEventWindowsWithFilter(db *gorm.DB, filter dto.UsageQue
 			var ok bool
 			// 当前右边界使用 open-ended 读取，避免 API 解析 end 早于最新入缓存事件。
 			if window.currentRight {
-				cachedEvents, ok = recentCache.EventsSince(window.start, filter.APIGroupKey)
+				cachedEvents, ok = recentCache.EventsSinceScoped(window.start, recentUsageScopeFilter(filter.Scope, filter.APIGroupKey))
 			} else {
 				// 历史边界必须尊重 end/includeEnd，不能把结束后的事件算进来。
-				cachedEvents, ok = recentCache.Events(window.start, window.end, window.includeEnd, filter.APIGroupKey)
+				cachedEvents, ok = recentCache.EventsScoped(window.start, window.end, window.includeEnd, recentUsageScopeFilter(filter.Scope, filter.APIGroupKey))
 			}
 			// ok=false 只表示缓存对象不可用；缓存为空也会 ok=true 并返回空切片。
 			if ok {
@@ -1263,8 +1356,9 @@ func loadUsageOverviewEventRangeWithProjection(db *gorm.DB, filter dto.UsageQuer
 	} else {
 		query = query.Where("timestamp < ?", timeutil.FormatStorageTime(end))
 	}
-	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
-		query = query.Where("api_group_key = ?", apiGroupKey)
+	query = applyUsageScopeFilter(query, filter.Scope, filter.APIGroupKey)
+	if sourceSystem := strings.TrimSpace(scopeSourceSystem(filter.Scope)); sourceSystem != "" {
+		query = query.Where("source_system = ?", sourceSystem)
 	}
 	var rows []usageEventProjection
 	if err := query.Find(&rows).Error; err != nil {
@@ -1503,7 +1597,7 @@ func loadUsageOverviewRealtimeEventsFromRecentCache(recentCache *UsageRecentEven
 	if recentCache == nil {
 		return nil, false
 	}
-	cachedEvents, ok := recentCache.Events(start, end, false, filter.APIGroupKey)
+	cachedEvents, ok := recentCache.EventsScoped(start, end, false, recentUsageScopeFilter(filter.Scope, filter.APIGroupKey))
 	if !ok {
 		return nil, false
 	}
