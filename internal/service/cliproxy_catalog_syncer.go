@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -68,14 +70,47 @@ func (s *CLIProxyCatalogSyncer) SyncOnce(ctx context.Context) error {
 	keys := make([]repository.SourceAPIKeyInput, 0, len(rows))
 	for _, row := range rows {
 		userRef, keyRef := cliProxyCatalogReferences(row.ID)
-		displayName := strings.TrimSpace(row.KeyAlias)
-		if displayName == "" {
-			displayName = "CLIProxy key"
-		}
+		displayName := cliProxyCatalogDisplayName(row.KeyAlias, row.APIKey)
 		users = append(users, repository.SourceUserInput{SourceUserRef: userRef, DisplayName: displayName, Active: true})
 		keys = append(keys, repository.SourceAPIKeyInput{SourceKeyRef: keyRef, SourceUserRef: userRef, UsageGroupRef: keyRef, DisplayName: displayName, Active: true})
 	}
 	return s.catalog.ApplySourceSnapshot(ctx, repository.SourceCatalogSnapshot{SourceSystem: cliProxySourceSystem, Users: users, Keys: keys, SyncedAt: s.now()})
+}
+
+func cliProxyCatalogDisplayName(alias, credential string) string {
+	alias = strings.TrimSpace(alias)
+	credential = strings.TrimSpace(credential)
+	if alias == "" || credential == "" {
+		return "CLIProxy key"
+	}
+	if strings.Contains(alias, credential) || strings.HasPrefix(strings.ToLower(alias), "sk-") || looksLikeCPAKeyHash(alias) {
+		return "CLIProxy key"
+	}
+	encoded := []string{
+		base64.StdEncoding.EncodeToString([]byte(credential)),
+		base64.RawStdEncoding.EncodeToString([]byte(credential)),
+		base64.URLEncoding.EncodeToString([]byte(credential)),
+		base64.RawURLEncoding.EncodeToString([]byte(credential)),
+	}
+	for _, value := range encoded {
+		if value != "" && strings.Contains(alias, value) {
+			return "CLIProxy key"
+		}
+	}
+	return alias
+}
+
+func looksLikeCPAKeyHash(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F') || (character >= '0' && character <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func cliProxyCatalogReferences(id int64) (string, string) {

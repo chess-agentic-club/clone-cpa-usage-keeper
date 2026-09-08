@@ -18,7 +18,9 @@ import (
 
 const (
 	liteLLMCatalogMaxPages = 10000
-	liteLLMUnownedUserRef  = "unowned"
+	// This reference is reserved for catalog-internal ownership only. Its long
+	// random-looking suffix makes collision with a LiteLLM user ID impractical.
+	liteLLMUnownedUserRef  = "internal-unowned:6d8c5d14e5672d1b"
 	liteLLMOpaqueKeyPrefix = "lkey-"
 )
 

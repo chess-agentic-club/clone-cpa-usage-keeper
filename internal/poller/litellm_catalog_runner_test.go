@@ -129,6 +129,33 @@ func TestLiteLLMKeyDisplayNameNeverUsesCredentialOrHashAlias(t *testing.T) {
 	}
 }
 
+func TestLiteLLMCatalogRunnerReservesOwnerlessReferenceAgainstUserIDCollision(t *testing.T) {
+	fixture := newLiteLLMCatalogFixture(t, false)
+	fixture.server.Close()
+	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user/list":
+			writeCatalogJSON(t, w, map[string]any{"users": []map[string]string{{"user_id": "unowned", "user_email": "member@example.com"}}, "total_pages": 1})
+		case "/key/list":
+			writeCatalogJSON(t, w, map[string]any{"keys": []map[string]any{{"token": strings.Repeat("e", 64), "user_id": "", "blocked": false}}, "total_pages": 1})
+		default:
+			t.Fatal("unexpected catalog request")
+		}
+	}))
+	t.Cleanup(fixture.server.Close)
+	db := catalogTestDB(t)
+	if err := NewLiteLLMCatalogRunner(NewLiteLLMClient(fixture.server.URL, "test-master", time.Second), repository.NewCatalogRepository(db), time.Minute, 100).SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce() error = %v", err)
+	}
+	var users []entities.SourceUser
+	if err := db.Where("source_system = ?", liteLLMSourceSystem).Order("source_user_ref").Find(&users).Error; err != nil {
+		t.Fatalf("load source users: %v", err)
+	}
+	if len(users) != 2 || users[0].SourceUserRef == users[1].SourceUserRef {
+		t.Fatal("ownerless synthetic user collided with a real LiteLLM user")
+	}
+}
+
 func catalogTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "catalog.db")})

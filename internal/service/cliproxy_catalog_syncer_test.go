@@ -67,6 +67,31 @@ func TestCLIProxyUsageKeyResolverRejectsMissingOrInactiveRow(t *testing.T) {
 	}
 }
 
+func TestCLIProxyCatalogSyncerNeverPublishesCredentialShapedAlias(t *testing.T) {
+	db := cliProxyCatalogTestDB(t)
+	if err := repository.SyncCPAAPIKeys(db, []string{"sk-catalog-alias"}, time.Now()); err != nil {
+		t.Fatalf("SyncCPAAPIKeys() error = %v", err)
+	}
+	rows, err := repository.ListActiveCPAAPIKeys(db)
+	if err != nil {
+		t.Fatalf("ListActiveCPAAPIKeys() error = %v", err)
+	}
+	if err := repository.UpdateCPAAPIKeyAlias(db, rows[0].ID, rows[0].APIKey); err != nil {
+		t.Fatalf("UpdateCPAAPIKeyAlias() error = %v", err)
+	}
+	catalog := repository.NewCatalogRepository(db)
+	if err := NewCLIProxyCatalogSyncer(db, catalog, time.Minute).SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce() error = %v", err)
+	}
+	keys, err := catalog.ListActiveSourceAPIKeys(context.Background(), cliProxySourceSystem)
+	if err != nil {
+		t.Fatalf("ListActiveSourceAPIKeys() error = %v", err)
+	}
+	if len(keys) != 1 || keys[0].DisplayName != "CLIProxy key" {
+		t.Fatal("credential-shaped alias entered the source catalog display name")
+	}
+}
+
 func cliProxyCatalogTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "cliproxy-catalog.db")})

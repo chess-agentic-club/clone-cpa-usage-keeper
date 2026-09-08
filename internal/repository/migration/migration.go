@@ -103,6 +103,7 @@ const (
 	migrationHardenIdentityCatalog                = "20260908_harden_identity_catalog"
 	migrationEnforceIdentityCatalogInvariants     = "20260908_enforce_identity_catalog_invariants"
 	migrationPurgeUnsafeIdentityCatalogReferences = "20260908_purge_unsafe_identity_catalog_references"
+	migrationNormalizeLiteLLMUsageGroups          = "20260908_normalize_litellm_usage_groups"
 )
 
 type schemaMigration struct {
@@ -256,6 +257,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationHardenIdentityCatalog, run: hardenIdentityCatalogMigration},
 		{version: migrationEnforceIdentityCatalogInvariants, run: enforceIdentityCatalogInvariantsMigration},
 		{version: migrationPurgeUnsafeIdentityCatalogReferences, run: purgeUnsafeIdentityCatalogReferencesMigration},
+		{version: migrationNormalizeLiteLLMUsageGroups, run: normalizeLegacyLiteLLMUsageGroupsMigration},
 	}
 }
 
