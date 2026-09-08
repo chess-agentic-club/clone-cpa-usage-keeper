@@ -68,13 +68,34 @@ func (s *CLIProxyCatalogSyncer) SyncOnce(ctx context.Context) error {
 	}
 	users := make([]repository.SourceUserInput, 0, len(rows))
 	keys := make([]repository.SourceAPIKeyInput, 0, len(rows))
+	userRefs := make([]string, 0, len(rows))
+	keyRefs := make([]string, 0, len(rows))
 	for _, row := range rows {
 		userRef, keyRef := cliProxyCatalogReferences(row.ID)
+		userRefs, keyRefs = append(userRefs, userRef), append(keyRefs, keyRef)
 		displayName := cliProxyCatalogDisplayName(row.KeyAlias, row.APIKey)
 		users = append(users, repository.SourceUserInput{SourceUserRef: userRef, DisplayName: displayName, Active: true})
 		keys = append(keys, repository.SourceAPIKeyInput{SourceKeyRef: keyRef, SourceUserRef: userRef, UsageGroupRef: keyRef, DisplayName: displayName, Active: true})
 	}
+	if err := scrubAbsentCLIProxyCatalogLabels(s.db, userRefs, keyRefs); err != nil {
+		return fmt.Errorf("scrub inactive CLIProxy catalog labels: %w", err)
+	}
 	return s.catalog.ApplySourceSnapshot(ctx, repository.SourceCatalogSnapshot{SourceSystem: cliProxySourceSystem, Users: users, Keys: keys, SyncedAt: s.now()})
+}
+
+func scrubAbsentCLIProxyCatalogLabels(db *gorm.DB, userRefs, keyRefs []string) error {
+	users := db.Model(&entities.SourceUser{}).Where("source_system = ?", cliProxySourceSystem)
+	keys := db.Model(&entities.SourceAPIKey{}).Where("source_system = ?", cliProxySourceSystem)
+	if len(userRefs) > 0 {
+		users = users.Where("source_user_ref NOT IN ?", userRefs)
+	}
+	if len(keyRefs) > 0 {
+		keys = keys.Where("source_key_ref NOT IN ?", keyRefs)
+	}
+	if err := users.Update("display_name", "CLIProxy key").Error; err != nil {
+		return err
+	}
+	return keys.Update("display_name", "CLIProxy key").Error
 }
 
 func cliProxyCatalogDisplayName(alias, credential string) string {

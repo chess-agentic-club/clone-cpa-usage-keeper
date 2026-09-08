@@ -18,8 +18,6 @@ import (
 
 const (
 	liteLLMCatalogMaxPages = 10000
-	// This reference is reserved for catalog-internal ownership only. Its long
-	// random-looking suffix makes collision with a LiteLLM user ID impractical.
 	liteLLMUnownedUserRef  = "internal-unowned:6d8c5d14e5672d1b"
 	liteLLMOpaqueKeyPrefix = "lkey-"
 )
@@ -86,12 +84,12 @@ func (r *LiteLLMCatalogRunner) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	keys, needsUnownedUser, err := r.listKeys(ctx, users)
+	keys, unownedRef, err := r.listKeys(ctx, users)
 	if err != nil {
 		return err
 	}
-	if needsUnownedUser {
-		users = append(users, repository.SourceUserInput{SourceUserRef: liteLLMUnownedUserRef, DisplayName: "Unowned LiteLLM keys", Active: false})
+	if unownedRef != "" {
+		users = append(users, repository.SourceUserInput{SourceUserRef: unownedRef, DisplayName: "Unowned LiteLLM keys", Active: false})
 	}
 	return r.catalog.ApplySourceSnapshot(ctx, repository.SourceCatalogSnapshot{
 		SourceSystem: liteLLMSourceSystem,
@@ -132,38 +130,40 @@ func (r *LiteLLMCatalogRunner) listUsers(ctx context.Context) ([]repository.Sour
 	}
 }
 
-func (r *LiteLLMCatalogRunner) listKeys(ctx context.Context, users []repository.SourceUserInput) ([]repository.SourceAPIKeyInput, bool, error) {
+func (r *LiteLLMCatalogRunner) listKeys(ctx context.Context, users []repository.SourceUserInput) ([]repository.SourceAPIKeyInput, string, error) {
 	knownUsers := make(map[string]struct{}, len(users))
 	for _, user := range users {
 		knownUsers[user.SourceUserRef] = struct{}{}
 	}
 	var keys []repository.SourceAPIKeyInput
 	seen := make(map[string]struct{})
-	needsUnownedUser := false
+	unownedRef := ""
 	for page := 1; ; page++ {
 		if page > liteLLMCatalogMaxPages {
-			return nil, false, fmt.Errorf("LiteLLM key catalog exceeds page limit")
+			return nil, "", fmt.Errorf("LiteLLM key catalog exceeds page limit")
 		}
 		result, err := r.client.ListKeys(ctx, page, r.pageSize)
 		if err != nil {
-			return nil, false, fmt.Errorf("list LiteLLM keys: %w", err)
+			return nil, "", fmt.Errorf("list LiteLLM keys: %w", err)
 		}
 		if result.TotalPages < page || result.TotalPages > liteLLMCatalogMaxPages {
-			return nil, false, fmt.Errorf("invalid LiteLLM key catalog pagination")
+			return nil, "", fmt.Errorf("invalid LiteLLM key catalog pagination")
 		}
 		for _, key := range result.Keys {
 			ref, err := opaqueLiteLLMKeyRef(key.Token)
 			if err != nil {
-				return nil, false, ErrInvalidLiteLLMKeyRef
+				return nil, "", ErrInvalidLiteLLMKeyRef
 			}
 			if _, duplicate := seen[ref]; duplicate {
-				return nil, false, fmt.Errorf("duplicate LiteLLM key reference")
+				return nil, "", fmt.Errorf("duplicate LiteLLM key reference")
 			}
 			seen[ref] = struct{}{}
 			owner := strings.TrimSpace(key.UserID)
 			if _, exists := knownUsers[owner]; owner == "" || !exists {
-				owner = liteLLMUnownedUserRef
-				needsUnownedUser = true
+				if unownedRef == "" {
+					unownedRef = availableLiteLLMUnownedUserRef(knownUsers)
+				}
+				owner = unownedRef
 			}
 			keys = append(keys, repository.SourceAPIKeyInput{
 				SourceKeyRef:  ref,
@@ -174,7 +174,19 @@ func (r *LiteLLMCatalogRunner) listKeys(ctx context.Context, users []repository.
 			})
 		}
 		if page == result.TotalPages {
-			return keys, needsUnownedUser, nil
+			return keys, unownedRef, nil
+		}
+	}
+}
+
+func availableLiteLLMUnownedUserRef(users map[string]struct{}) string {
+	for suffix := 0; ; suffix++ {
+		candidate := liteLLMUnownedUserRef
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d", candidate, suffix)
+		}
+		if _, exists := users[candidate]; !exists {
+			return candidate
 		}
 	}
 }

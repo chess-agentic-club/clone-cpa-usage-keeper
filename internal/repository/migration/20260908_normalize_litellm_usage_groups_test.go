@@ -47,6 +47,19 @@ func TestNormalizeLegacyLiteLLMUsageGroupsMigratesAllPersistedProjections(t *tes
 	if err := db.Create(&entities.UsageLatencyStat{BucketType: entities.UsageLatencyBucketHour, BucketStart: now, APIGroupKey: legacy, TTFTSketch: []byte{}, LatencySketch: []byte{}, SamplePoints: []byte{}}).Error; err != nil {
 		t.Fatalf("seed latency rollup: %v", err)
 	}
+	canonical, err := normalizedLiteLLMUsageGroup(legacy)
+	if err != nil {
+		t.Fatalf("calculate canonical group: %v", err)
+	}
+	if err := db.Create(&entities.UsageOverviewHourlyStat{BucketStart: now, APIGroupKey: canonical, Model: "model", RequestCount: 2}).Error; err != nil {
+		t.Fatalf("seed colliding hourly rollup: %v", err)
+	}
+	if err := db.Create(&entities.UsageOverviewDailyStat{BucketStart: now, APIGroupKey: canonical, Model: "model", RequestCount: 2}).Error; err != nil {
+		t.Fatalf("seed colliding daily rollup: %v", err)
+	}
+	if err := db.Create(&entities.UsageActivityStat{Grain: entities.UsageActivityGrainDaily, BucketStart: now, BucketEnd: now.Add(time.Hour), APIGroupKey: canonical, TotalTokens: 2}).Error; err != nil {
+		t.Fatalf("seed colliding activity rollup: %v", err)
+	}
 
 	if err := normalizeLegacyLiteLLMUsageGroupsMigration(db); err != nil {
 		t.Fatalf("normalize migration: %v", err)
@@ -54,15 +67,15 @@ func TestNormalizeLegacyLiteLLMUsageGroupsMigratesAllPersistedProjections(t *tes
 	if err := normalizeLegacyLiteLLMUsageGroupsMigration(db); err != nil {
 		t.Fatalf("idempotent normalize migration: %v", err)
 	}
-	canonical, err := normalizedLiteLLMUsageGroup(legacy)
-	if err != nil {
-		t.Fatalf("calculate canonical group: %v", err)
-	}
 	for _, table := range []string{"usage_events", "usage_events_archive", "usage_api_key_identities", "usage_overview_hourly_stats", "usage_overview_daily_stats", "usage_activity_stats", "usage_latency_stats"} {
 		var count int64
 		if err := db.Table(table).Where("api_group_key = ?", canonical).Count(&count).Error; err != nil || count != 1 {
 			t.Fatalf("%s canonical group count = %d, error=%v", table, count, err)
 		}
+	}
+	var hourly entities.UsageOverviewHourlyStat
+	if err := db.Where("api_group_key = ?", canonical).First(&hourly).Error; err != nil || hourly.RequestCount != 2 {
+		t.Fatal("hourly collision was not reconciled")
 	}
 	var unattributed int64
 	if err := db.Model(&entities.UsageEvent{}).Where("api_group_key = ?", "litellm:unattributed").Count(&unattributed).Error; err != nil || unattributed != 1 {

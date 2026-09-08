@@ -75,6 +75,9 @@ func legacyLiteLLMUsageGroups(tx *gorm.DB) ([]string, error) {
 }
 
 func replaceLegacyLiteLLMUsageGroup(tx *gorm.DB, legacy, canonical string) error {
+	if err := discardDuplicateLiteLLMRollups(tx, legacy, canonical); err != nil {
+		return err
+	}
 	updates := []struct {
 		table  string
 		column string
@@ -105,6 +108,21 @@ func replaceLegacyLiteLLMUsageGroup(tx *gorm.DB, legacy, canonical string) error
 		}
 		if err := tx.Table("usage_api_key_identities").Where("source_system = ? AND api_group_key = ?", "litellm", legacy).Update("api_group_key", canonical).Error; err != nil {
 			return fmt.Errorf("normalize LiteLLM API key identity: %w", err)
+		}
+	}
+	return nil
+}
+
+func discardDuplicateLiteLLMRollups(tx *gorm.DB, legacy, canonical string) error {
+	queries := []string{
+		`DELETE FROM usage_overview_hourly_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_overview_hourly_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.bucket_start = legacy_row.bucket_start AND current_row.model = legacy_row.model AND current_row.auth_index = legacy_row.auth_index AND current_row.model_alias = legacy_row.model_alias AND current_row.service_tier = legacy_row.service_tier AND current_row.response_service_tier = legacy_row.response_service_tier AND current_row.reasoning_effort = legacy_row.reasoning_effort AND current_row.endpoint = legacy_row.endpoint AND current_row.executor_type = legacy_row.executor_type)`,
+		`DELETE FROM usage_overview_daily_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_overview_daily_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.bucket_start = legacy_row.bucket_start AND current_row.model = legacy_row.model AND current_row.auth_index = legacy_row.auth_index AND current_row.model_alias = legacy_row.model_alias AND current_row.service_tier = legacy_row.service_tier AND current_row.response_service_tier = legacy_row.response_service_tier AND current_row.reasoning_effort = legacy_row.reasoning_effort AND current_row.endpoint = legacy_row.endpoint AND current_row.executor_type = legacy_row.executor_type)`,
+		`DELETE FROM usage_activity_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_activity_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.grain = legacy_row.grain AND current_row.bucket_start = legacy_row.bucket_start)`,
+		`DELETE FROM usage_latency_stats AS legacy_row WHERE api_group_key = ? AND EXISTS (SELECT 1 FROM usage_latency_stats AS current_row WHERE current_row.api_group_key = ? AND current_row.bucket_type = legacy_row.bucket_type AND current_row.bucket_start = legacy_row.bucket_start)`,
+	}
+	for _, query := range queries {
+		if err := tx.Exec(query, legacy, canonical).Error; err != nil {
+			return fmt.Errorf("reconcile duplicate LiteLLM rollup: %w", err)
 		}
 	}
 	return nil

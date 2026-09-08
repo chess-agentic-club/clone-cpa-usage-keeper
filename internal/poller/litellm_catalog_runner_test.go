@@ -135,7 +135,7 @@ func TestLiteLLMCatalogRunnerReservesOwnerlessReferenceAgainstUserIDCollision(t 
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/user/list":
-			writeCatalogJSON(t, w, map[string]any{"users": []map[string]string{{"user_id": "unowned", "user_email": "member@example.com"}}, "total_pages": 1})
+			writeCatalogJSON(t, w, map[string]any{"users": []map[string]string{{"user_id": liteLLMUnownedUserRef, "user_email": "member@example.com"}}, "total_pages": 1})
 		case "/key/list":
 			writeCatalogJSON(t, w, map[string]any{"keys": []map[string]any{{"token": strings.Repeat("e", 64), "user_id": "", "blocked": false}}, "total_pages": 1})
 		default:
