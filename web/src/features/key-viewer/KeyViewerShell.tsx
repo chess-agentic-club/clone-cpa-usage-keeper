@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AuthSessionAPIKeySummary } from '@/lib/types';
+import type { AuthRole, AuthSessionAPIKeySummary } from '@/lib/types';
 import type { Theme } from '@/types';
 import { logout } from '@/lib/api';
 import { BrandLink } from '@/components/BrandLink';
@@ -8,7 +8,7 @@ import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { MainActionButton } from '@/components/ui/MainActionButton';
 import { useThemeStore } from '@/stores';
-import { KEY_VIEWER_PAGE_PATHS, type KeyViewerPage, type KeyViewerPath } from './navigation';
+import { KEY_VIEWER_PAGE_PATHS, keyViewerPagesForRole, type KeyViewerPage, type KeyViewerPath } from './navigation';
 import styles from './KeyViewerShell.module.scss';
 
 const KEY_VIEWER_PAGE_LABEL_KEYS: Record<KeyViewerPage, string> = {
@@ -24,6 +24,7 @@ const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
 ];
 
 interface KeyViewerShellProps {
+  role?: AuthRole;
   activePage: KeyViewerPage;
   apiKey?: AuthSessionAPIKeySummary;
   loading?: boolean;
@@ -34,6 +35,7 @@ interface KeyViewerShellProps {
 }
 
 export function KeyViewerShell({
+  role = 'api_key_viewer',
   activePage,
   apiKey,
   loading = false,
@@ -50,7 +52,7 @@ export function KeyViewerShell({
     () => THEME_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
     [t],
   );
-  const identityLabel = apiKey?.display_key || t('key_overview.identity_unknown');
+  const identityLabel = apiKey?.display_key || (role === 'user' ? t('usage_scope.current_user') : t('key_overview.identity_unknown'));
 
   const handleLogout = useCallback(async () => {
     setLoggingOut(true);
@@ -122,7 +124,7 @@ export function KeyViewerShell({
                 aria-label={t('key_overview.tabs_aria_label')}
                 lang={i18n.resolvedLanguage || i18n.language}
               >
-                {(Object.keys(KEY_VIEWER_PAGE_PATHS) as KeyViewerPage[]).map((page) => {
+                {keyViewerPagesForRole(role).map((page) => {
                   const active = page === activePage;
                   return (
                     <button

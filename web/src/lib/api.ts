@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsageScopeKeysResponse, type UsageScopeSelection, type UsageScopeUsersResponse, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -93,6 +93,7 @@ function normalizeOverviewRealtimeBlock(
 export interface FetchKeyOverviewRealtimeOptions {
   window?: OverviewRealtimeWindow
   signal?: AbortSignal
+  scope?: UsageScopeSelection
 }
 
 export interface FetchUsageOverviewRealtimeOptions extends FetchKeyOverviewRealtimeOptions {
@@ -319,8 +320,29 @@ const buildUsageRangeParams = (request: UsageRangeRequest): URLSearchParams => {
   return params
 }
 
-export async function fetchKeyOverview(request: UsageRangeRequest, signal?: AbortSignal): Promise<UsageOverviewResponse> {
-  const params = buildUsageRangeParams(request)
+export const appendUsageScopeParams = (params: URLSearchParams, scope?: UsageScopeSelection): URLSearchParams => {
+  if (scope?.userCatalogId) params.set('user_catalog_id', scope.userCatalogId)
+  if (scope?.keyCatalogId) params.set('key_catalog_id', scope.keyCatalogId)
+  return params
+}
+
+export async function fetchUsageScopeUsers(signal?: AbortSignal): Promise<UsageScopeUsersResponse> {
+  const response = await apiFetch(apiPath('/usage/scope/users'), { signal, cache: 'no-store' })
+  if (!response.ok) await parseApiError(response, `Failed to load usage scope users: ${response.status}`)
+  return response.json()
+}
+
+export async function fetchUsageScopeKeys(userCatalogId: string, signal?: AbortSignal): Promise<UsageScopeKeysResponse> {
+  const params = new URLSearchParams()
+  if (userCatalogId) params.set('user_catalog_id', userCatalogId)
+  const query = params.toString()
+  const response = await apiFetch(`${apiPath('/usage/scope/keys')}${query ? `?${query}` : ''}`, { signal, cache: 'no-store' })
+  if (!response.ok) await parseApiError(response, `Failed to load usage scope keys: ${response.status}`)
+  return response.json()
+}
+
+export async function fetchKeyOverview(request: UsageRangeRequest, signal?: AbortSignal, scope?: UsageScopeSelection): Promise<UsageOverviewResponse> {
+  const params = appendUsageScopeParams(buildUsageRangeParams(request), scope)
   const response = await apiFetch(`${apiPath('/key-overview')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load key overview: ${response.status}`)
@@ -328,8 +350,8 @@ export async function fetchKeyOverview(request: UsageRangeRequest, signal?: Abor
   return response.json()
 }
 
-export async function fetchKeyAnalysis(request: UsageRangeRequest, signal?: AbortSignal): Promise<AnalysisResponse> {
-  const params = buildUsageRangeParams(request)
+export async function fetchKeyAnalysis(request: UsageRangeRequest, signal?: AbortSignal, scope?: UsageScopeSelection): Promise<AnalysisResponse> {
+  const params = appendUsageScopeParams(buildUsageRangeParams(request), scope)
   const response = await apiFetch(`${apiPath('/key-analysis')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load key analysis: ${response.status}`)
@@ -337,8 +359,8 @@ export async function fetchKeyAnalysis(request: UsageRangeRequest, signal?: Abor
   return response.json()
 }
 
-export async function fetchKeyAnalysisLatency(request: UsageRangeRequest, signal?: AbortSignal): Promise<AnalysisLatencyDiagnostics> {
-  const params = buildUsageRangeParams(request)
+export async function fetchKeyAnalysisLatency(request: UsageRangeRequest, signal?: AbortSignal, scope?: UsageScopeSelection): Promise<AnalysisLatencyDiagnostics> {
+  const params = appendUsageScopeParams(buildUsageRangeParams(request), scope)
   const response = await apiFetch(`${apiPath('/key-analysis/latency')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load key analysis latency: ${response.status}`)
@@ -349,6 +371,7 @@ export async function fetchKeyAnalysisLatency(request: UsageRangeRequest, signal
 export interface FetchUsageActivityOptions {
   request: UsageActivityRequest
   apiKeyId?: string
+  scope?: UsageScopeSelection
   signal?: AbortSignal
 }
 
@@ -362,8 +385,8 @@ const buildUsageActivityParams = (request: UsageActivityRequest): URLSearchParam
   return buildUsageRangeParams(request)
 }
 
-export async function fetchKeyActivity({ request, signal }: FetchUsageActivityOptions): Promise<UsageActivityResponse> {
-  const params = buildUsageActivityParams(request)
+export async function fetchKeyActivity({ request, signal, scope }: FetchUsageActivityOptions): Promise<UsageActivityResponse> {
+  const params = appendUsageScopeParams(buildUsageActivityParams(request), scope)
   const response = await apiFetch(`${apiPath('/key-activity')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load key activity: ${response.status}`)
@@ -372,11 +395,12 @@ export async function fetchKeyActivity({ request, signal }: FetchUsageActivityOp
 }
 
 export async function fetchKeyOverviewRealtime(options: FetchKeyOverviewRealtimeOptions = {}): Promise<OverviewRealtimeBlock> {
-  const { window, signal } = options
+  const { window, signal, scope } = options
   const params = new URLSearchParams()
   if (window) {
     params.set('window', window)
   }
+  appendUsageScopeParams(params, scope)
   const query = params.toString()
   const response = await apiFetch(`${apiPath('/key-overview/realtime')}${query ? `?${query}` : ''}`, { signal })
   if (!response.ok) {
@@ -772,8 +796,8 @@ export async function deleteAuthFiles(names: string[]): Promise<AuthFilesManagem
   return response.json()
 }
 
-export async function fetchAnalysis(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string): Promise<AnalysisResponse> {
-  const params = buildUsageRangeParams(request)
+export async function fetchAnalysis(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string, scope?: UsageScopeSelection): Promise<AnalysisResponse> {
+  const params = appendUsageScopeParams(buildUsageRangeParams(request), scope)
   const selectedAPIKeyId = apiKeyId?.trim()
   if (selectedAPIKeyId) {
     params.set('api_key_id', selectedAPIKeyId)
@@ -786,8 +810,8 @@ export async function fetchAnalysis(request: UsageRangeRequest, signal?: AbortSi
   return response.json()
 }
 
-export async function fetchAnalysisLatency(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string): Promise<AnalysisLatencyDiagnostics> {
-  const params = buildUsageRangeParams(request)
+export async function fetchAnalysisLatency(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string, scope?: UsageScopeSelection): Promise<AnalysisLatencyDiagnostics> {
+  const params = appendUsageScopeParams(buildUsageRangeParams(request), scope)
   const selectedAPIKeyId = apiKeyId?.trim()
   if (selectedAPIKeyId) {
     params.set('api_key_id', selectedAPIKeyId)

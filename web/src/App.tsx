@@ -15,6 +15,7 @@ import { UsagePage } from './pages/UsagePage';
 import { cpamcEmbedSearch, isCPAMCEmbed, notifyCPAMCEmbedReady } from './embed/cpamcEmbed';
 import { getUsageTabPath, resolveUsageTabFromPath, stripAppBasePath } from './lib/usageNavigation';
 import { useUsageStatsStore } from './stores/useUsageStatsStore';
+import { useUsageScope } from './features/usage-scope/useUsageScope';
 
 type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
 const getInitialKeyViewerPath = (): KeyViewerPath => {
@@ -24,7 +25,7 @@ const getInitialKeyViewerPath = (): KeyViewerPath => {
 };
 
 export const getRoleHomePath = (role: AuthRole): '/' | '/key-overview' => (
-  role === 'api_key_viewer' ? '/key-overview' : '/'
+  role === 'api_key_viewer' || role === 'user' ? '/key-overview' : '/'
 );
 
 export const getRoleTargetPath = (
@@ -33,8 +34,9 @@ export const getRoleTargetPath = (
   isEmbeddedInCPAMC = false,
 ): string => {
   // 路径白名单与会话角色共同决定落点；未知路径只回到该角色自己的首页。
-  if (role === 'api_key_viewer') {
-    return isKeyViewerPath(currentPath) ? currentPath : '/key-overview';
+  if (role === 'api_key_viewer' || role === 'user') {
+    if (!isKeyViewerPath(currentPath)) return '/key-overview';
+    return role === 'user' && currentPath === '/key-ranking' ? '/key-overview' : currentPath;
   }
   if (currentPath === '/') return '/';
 
@@ -57,6 +59,7 @@ function App() {
   const { t } = useTranslation();
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [authRole, setAuthRole] = useState<AuthRole | null>(null);
+  const [authMode, setAuthMode] = useState<'standalone' | 'embedded_jwt'>('standalone');
   const [sessionAPIKey, setSessionAPIKey] = useState<AuthSessionAPIKeySummary | undefined>();
   const [keyViewerPath, setKeyViewerPath] = useState<KeyViewerPath>(getInitialKeyViewerPath);
   const [adminLoginError, setAdminLoginError] = useState('');
@@ -74,7 +77,14 @@ function App() {
     setSessionAPIKey(undefined);
   }, [clearUsageStats]);
 
+  const userScope = useUsageScope({
+    role: authRole,
+    enabled: authState === 'authenticated' && authRole === 'user',
+    onAuthRequired: clearSession,
+  });
+
   const applySession = useCallback((session: Awaited<ReturnType<typeof getSession>>) => {
+    setAuthMode(session.auth_mode ?? 'standalone');
     setViewerKeyLoginEnabled(isViewerKeyLoginEnabled(session));
     if (!session.authenticated) {
       clearSession();
@@ -105,7 +115,7 @@ function App() {
     if (authState !== 'authenticated' || !authRole) return;
     const strippedPath = stripAppBasePath(window.location.pathname, window.__APP_BASE_PATH__);
     const targetPath = getRoleTargetPath(authRole, strippedPath ?? '/', isEmbeddedInCPAMC);
-    if (authRole === 'api_key_viewer') {
+    if (authRole === 'api_key_viewer' || authRole === 'user') {
       setKeyViewerPath(targetPath as KeyViewerPath);
     }
     if (strippedPath === targetPath) return;
@@ -177,15 +187,17 @@ function App() {
   if (authState === 'checking') {
     page = <div className="app-checking" aria-busy="true" />;
   } else if (authState === 'unauthenticated') {
-    page = <LoginPage viewerKeyLoginEnabled={viewerKeyLoginEnabled} loading={submitting} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
-  } else if (authRole === 'api_key_viewer') {
+    page = authMode === 'embedded_jwt'
+      ? <div className="app-embedded-launch">{t('auth.open_usage_from_open_webui')}</div>
+      : <LoginPage viewerKeyLoginEnabled={viewerKeyLoginEnabled} loading={submitting} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
+  } else if (authRole === 'api_key_viewer' || authRole === 'user') {
     page = keyViewerPath === '/key-analysis'
-      ? <KeyAnalysisPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
+      ? <KeyAnalysisPage role={authRole} apiKey={sessionAPIKey} scope={authRole === 'user' ? userScope : undefined} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
       : keyViewerPath === '/key-ranking'
         ? <KeyRankingPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
-        : <KeyOverviewPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />;
+        : <KeyOverviewPage role={authRole} apiKey={sessionAPIKey} scope={authRole === 'user' ? userScope : undefined} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />;
   } else {
-    page = <UsagePage onAuthRequired={clearSession} />;
+    page = <UsagePage onAuthRequired={clearSession} authMode={authMode} />;
   }
 
   return (

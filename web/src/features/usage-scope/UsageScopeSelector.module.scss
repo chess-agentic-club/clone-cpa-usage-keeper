@@ -1,0 +1,24 @@
+.scope {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stale,
+.error {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stale { color: #b7791f; }
+.error { color: var(--error-color, #dc2626); }

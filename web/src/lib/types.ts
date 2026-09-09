@@ -1,4 +1,4 @@
-export type AuthRole = 'admin' | 'api_key_viewer'
+export type AuthRole = 'admin' | 'user' | 'api_key_viewer'
 
 export interface AuthSessionAPIKeySummary {
   display_key: string
@@ -9,8 +9,33 @@ export interface AuthSessionAPIKeySummary {
 export interface AuthSessionResponse {
   authenticated: boolean
   role?: AuthRole
+  auth_mode?: 'standalone' | 'embedded_jwt'
   api_key?: AuthSessionAPIKeySummary
   capabilities?: SourceCapabilitiesResponse
+}
+
+export interface UsageScopeOption {
+  id: string
+  label: string
+}
+
+export interface UsageScopeUsersResponse {
+  source_system: string
+  synced_at: string
+  stale: boolean
+  users: UsageScopeOption[]
+}
+
+export interface UsageScopeKeysResponse {
+  source_system: string
+  synced_at: string
+  stale: boolean
+  keys: UsageScopeOption[]
+}
+
+export interface UsageScopeSelection {
+  userCatalogId: string
+  keyCatalogId: string
 }
 
 export type AuthManagedSessionKind = 'admin' | 'api_key'

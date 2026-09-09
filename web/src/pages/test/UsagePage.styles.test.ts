@@ -268,8 +268,8 @@ describe('UsagePage toolbar styles', () => {
     expect(usagePageSource).toContain('customRange={activeCustomRange}')
     expect(usagePageSource).toContain("maxCustomDayRangeDays={activeTab === 'events' ? REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS : undefined}")
     expect(usagePageSource).toContain('onChange={handleTimeRangeChange}')
-    expect(usagePageSource).toContain('fetchAnalysis(usageRangeQuery, controller.signal, requestApiKeyId)')
-    expect(usagePageSource).toContain('fetchAnalysisLatency(usageRangeQuery, controller.signal, requestApiKeyId)')
+    expect(usagePageSource).toContain('fetchAnalysis(usageRangeQuery, controller.signal, requestApiKeyId, usingEmbeddedScope ? embeddedScope.selection : undefined)')
+    expect(usagePageSource).toContain('fetchAnalysisLatency(usageRangeQuery, controller.signal, requestApiKeyId, usingEmbeddedScope ? embeddedScope.selection : undefined)')
     expect(usagePageSource).toContain('fetchUsageEvents(usageRangeQuery, controller.signal, {')
     expect(usagePageSource).toContain('exportUsageEvents(usageRangeQuery, format, {')
 
@@ -277,7 +277,7 @@ describe('UsagePage toolbar styles', () => {
     expect(keyOverviewPageSource).toContain('const usageRangeQuery = useMemo(() => buildUsageRangeQuery({')
     expect(keyOverviewPageSource).toContain('customRange={customRange}')
     expect(keyOverviewPageSource).toContain('onChange={handleTimeRangeChange}')
-    expect(keyOverviewPageSource).toContain('fetchKeyOverview(usageRangeQuery, controller.signal)')
+    expect(keyOverviewPageSource).toContain('fetchKeyOverview(usageRangeQuery, controller.signal, scope?.selection)')
   })
 
   it('persists one time range across API Key viewer pages', () => {

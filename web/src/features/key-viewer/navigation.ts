@@ -1,3 +1,5 @@
+import type { AuthRole } from '@/lib/types';
+
 export type KeyViewerPage = 'overview' | 'analysis' | 'ranking';
 export type KeyViewerPath = '/key-overview' | '/key-analysis' | '/key-ranking';
 
@@ -10,3 +12,7 @@ export const KEY_VIEWER_PAGE_PATHS: Record<KeyViewerPage, KeyViewerPath> = {
 const KEY_VIEWER_PATHS = new Set<KeyViewerPath>(Object.values(KEY_VIEWER_PAGE_PATHS));
 
 export const isKeyViewerPath = (path: string): path is KeyViewerPath => KEY_VIEWER_PATHS.has(path as KeyViewerPath);
+
+export const keyViewerPagesForRole = (role: AuthRole): KeyViewerPage[] => (
+  role === 'user' ? ['overview', 'analysis'] : ['overview', 'analysis', 'ranking']
+)

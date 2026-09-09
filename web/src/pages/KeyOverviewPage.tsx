@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError, fetchKeyOverview, fetchKeyOverviewRealtime, isUsageRangeBoundsConflict } from '@/lib/api';
-import type { AuthSessionAPIKeySummary, OverviewRealtimeBlock, OverviewRealtimeWindow, UsageCustomRange, UsageOverviewResponse, UsageTimeRange } from '@/lib/types';
+import type { AuthRole, AuthSessionAPIKeySummary, OverviewRealtimeBlock, OverviewRealtimeWindow, UsageCustomRange, UsageOverviewResponse, UsageTimeRange } from '@/lib/types';
 import { MainActionButton } from '@/components/ui/MainActionButton';
 import { IconRefreshCw } from '@/components/ui/icons';
 import { KeyViewerShell } from '@/features/key-viewer/KeyViewerShell';
@@ -23,6 +23,8 @@ import { clampStoredUsageRangeStateToCurrentBounds, resolveUsageRangeRecoveryTim
 import { buildUsageRangeQuery } from '@/utils/usage/rangeQuery';
 import { loadKeyViewerTimeRange, persistKeyViewerTimeRange } from '@/features/key-viewer/timeRange';
 import styles from '@/features/key-viewer/KeyViewerShell.module.scss';
+import { UsageScopeSelector } from '@/features/usage-scope/UsageScopeSelector';
+import type { UsageScopeState } from '@/features/usage-scope/useUsageScope';
 
 const OVERVIEW_REALTIME_WINDOW_STORAGE_KEY = 'cli-proxy-usage-overview-realtime-window-v1';
 const DEFAULT_REALTIME_WINDOW: OverviewRealtimeWindow = '15m';
@@ -131,12 +133,14 @@ export const scheduleKeyOverviewAutoRefresh = ({
 };
 
 export interface KeyOverviewPageProps {
+  role?: AuthRole;
   apiKey?: AuthSessionAPIKeySummary;
+  scope?: UsageScopeState;
   onNavigate: (path: KeyViewerPath) => void;
   onAuthRequired?: () => void;
 }
 
-export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverviewPageProps) {
+export function KeyOverviewPage({ role = 'api_key_viewer', apiKey, scope, onNavigate, onAuthRequired }: KeyOverviewPageProps) {
   const { t } = useTranslation();
   const isMobile = useMediaQuery('(max-width: 768px)');
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
@@ -176,6 +180,7 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
   } = useUsageActivityData({
     viewer: 'key',
     request: activityRangeRequest,
+    scope: scope?.selection,
     enabled: usageRangeQuery.valid,
     onAuthRequired,
   });
@@ -218,7 +223,7 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
     setLoading(true);
     setError('');
     try {
-      const overview = await fetchKeyOverview(usageRangeQuery, controller.signal);
+      const overview = await fetchKeyOverview(usageRangeQuery, controller.signal, scope?.selection);
       if (overviewRequestControllerRef.current !== controller) return;
       setUsage(overview as UsageOverviewResponse as UsageOverviewPayload);
       setLoadedUsageRange(usageRangeQueryKey);
@@ -236,7 +241,7 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
         overviewRequestControllerRef.current = null;
       }
     }
-  }, [onAuthRequired, recoverRangeBoundsConflict, usageRangeQuery, usageRangeQueryKey]);
+  }, [onAuthRequired, recoverRangeBoundsConflict, scope?.selection, usageRangeQuery, usageRangeQueryKey]);
 
   const loadRealtime = useCallback(async (options: KeyOverviewLoadOptions = {}) => {
     const { controller, skipped } = startKeyOverviewRequest({
@@ -251,6 +256,7 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
       const nextRealtime = await fetchKeyOverviewRealtime({
         window: realtimeWindow,
         signal: controller.signal,
+        scope: scope?.selection,
       });
       if (realtimeRequestControllerRef.current !== controller) return;
       setRealtime(nextRealtime);
@@ -267,7 +273,7 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
         realtimeRequestControllerRef.current = null;
       }
     }
-  }, [onAuthRequired, realtimeWindow]);
+  }, [onAuthRequired, realtimeWindow, scope?.selection]);
 
   useEffect(() => {
     void loadOverview();
@@ -354,6 +360,9 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
   const toolbar = (
     <>
       <div className={styles.usageFilterBar}>
+        {role === 'user' && scope && (
+          <UsageScopeSelector role={role} selection={scope.selection} keys={scope.keys} loading={scope.loading} error={scope.error} onSelectionChange={scope.setSelection} />
+        )}
         <TimeRangeControl
           value={timeRange}
           customRange={customRange}
@@ -387,6 +396,7 @@ export function KeyOverviewPage({ apiKey, onNavigate, onAuthRequired }: KeyOverv
   return (
     <KeyViewerShell
       activePage="overview"
+      role={role}
       apiKey={apiKey}
       loading={loading && !usage}
       toolbar={toolbar}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError, fetchKeyAnalysis, fetchKeyAnalysisLatency, isUsageRangeBoundsConflict } from '@/lib/api';
-import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthSessionAPIKeySummary, UsageCustomRange, UsageTimeRange } from '@/lib/types';
+import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthRole, AuthSessionAPIKeySummary, UsageCustomRange, UsageTimeRange } from '@/lib/types';
 import { AnalysisPanel, TimeRangeControl } from '@/components/usage';
 import { MainActionButton } from '@/components/ui/MainActionButton';
 import { IconRefreshCw } from '@/components/ui/icons';
@@ -17,18 +17,22 @@ import {
 import { buildUsageRangeQuery } from '@/utils/usage/rangeQuery';
 import { loadKeyViewerTimeRange, persistKeyViewerTimeRange } from '@/features/key-viewer/timeRange';
 import styles from '@/features/key-viewer/KeyViewerShell.module.scss';
+import { UsageScopeSelector } from '@/features/usage-scope/UsageScopeSelector';
+import type { UsageScopeState } from '@/features/usage-scope/useUsageScope';
 
 const loadTimeRange = (): StoredUsageRangeState => {
   return loadKeyViewerTimeRange();
 };
 
 export interface KeyAnalysisPageProps {
+  role?: AuthRole;
   apiKey?: AuthSessionAPIKeySummary;
+  scope?: UsageScopeState;
   onNavigate: (path: KeyViewerPath) => void;
   onAuthRequired?: () => void;
 }
 
-export function KeyAnalysisPage({ apiKey, onNavigate, onAuthRequired }: KeyAnalysisPageProps) {
+export function KeyAnalysisPage({ role = 'api_key_viewer', apiKey, scope, onNavigate, onAuthRequired }: KeyAnalysisPageProps) {
   const { t } = useTranslation();
   const isMobile = useMediaQuery('(max-width: 768px)');
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
@@ -90,7 +94,7 @@ export function KeyAnalysisPage({ apiKey, onNavigate, onAuthRequired }: KeyAnaly
     setLatency(null);
 
     // 主 Analysis 与 Latency 同时加载，但分别更新状态，避免一个慢请求阻塞另一块内容。
-    const coreRequest = fetchKeyAnalysis(usageRangeQuery, controller.signal).then((response) => {
+    const coreRequest = fetchKeyAnalysis(usageRangeQuery, controller.signal, scope?.selection).then((response) => {
       if (requestControllerRef.current !== controller) return;
       // 项目时区只作为后续 409 恢复依据，不参与当前请求 callback 身份，避免响应触发重复加载。
       analysisTimeZoneRef.current = response.timezone;
@@ -106,7 +110,7 @@ export function KeyAnalysisPage({ apiKey, onNavigate, onAuthRequired }: KeyAnaly
       }
       setAnalysisError('KEY_ANALYSIS_LOAD_FAILED');
     });
-    const latencyRequest = fetchKeyAnalysisLatency(usageRangeQuery, controller.signal).then((response) => {
+    const latencyRequest = fetchKeyAnalysisLatency(usageRangeQuery, controller.signal, scope?.selection).then((response) => {
       if (requestControllerRef.current !== controller) return;
       setLatency(response);
       setLatencyLoading(false);
@@ -124,7 +128,7 @@ export function KeyAnalysisPage({ apiKey, onNavigate, onAuthRequired }: KeyAnaly
     if (requestControllerRef.current === controller) {
       requestControllerRef.current = null;
     }
-  }, [onAuthRequired, recoverRangeBoundsConflict, usageRangeQuery]);
+  }, [onAuthRequired, recoverRangeBoundsConflict, scope?.selection, usageRangeQuery]);
 
   useEffect(() => {
     void loadAnalysis();
@@ -153,6 +157,9 @@ export function KeyAnalysisPage({ apiKey, onNavigate, onAuthRequired }: KeyAnaly
   const toolbar = (
     <>
       <div className={styles.usageFilterBar}>
+        {role === 'user' && scope && (
+          <UsageScopeSelector role={role} selection={scope.selection} keys={scope.keys} loading={scope.loading} error={scope.error} onSelectionChange={scope.setSelection} />
+        )}
         <TimeRangeControl
           value={timeRange}
           customRange={customRange}
@@ -186,6 +193,7 @@ export function KeyAnalysisPage({ apiKey, onNavigate, onAuthRequired }: KeyAnaly
   return (
     <KeyViewerShell
       activePage="analysis"
+      role={role}
       apiKey={apiKey}
       loading={analysisLoading && !analysis}
       toolbar={toolbar}

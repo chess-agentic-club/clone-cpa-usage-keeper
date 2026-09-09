@@ -25,6 +25,13 @@ describe('App role route normalization', () => {
     expect(shouldNormalizeRolePath('api_key_viewer', '/auth-files')).toBe(true);
   });
 
+  it('limits embedded users to Overview and Analysis routes', () => {
+    expect(getRoleHomePath('user')).toBe('/key-overview');
+    expect(shouldNormalizeRolePath('user', '/key-overview')).toBe(false);
+    expect(shouldNormalizeRolePath('user', '/key-analysis')).toBe(false);
+    expect(shouldNormalizeRolePath('user', '/key-ranking')).toBe(true);
+  });
+
   it('uses viewer_key_login instead of CPA integration capabilities', () => {
     expect(isViewerKeyLoginEnabled({
       authenticated: false,
@@ -60,6 +67,24 @@ describe('App role route normalization', () => {
     expect(markup).toContain('Engineering •••• 1234');
     expect(markup).not.toContain('sk-virtual');
     expect(markup).not.toContain('litellm:token-engineering');
+  });
+
+  it('does not render Ranking in a user shell', () => {
+    const markup = renderToStaticMarkup(createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(KeyViewerShell, {
+        role: 'user',
+        activePage: 'overview',
+        toolbar: createElement('div'),
+        onNavigate: () => undefined,
+        children: createElement('div'),
+      }),
+    ));
+
+    expect(markup).toContain('Overview');
+    expect(markup).toContain('Analysis');
+    expect(markup).not.toContain('Ranking');
   });
 
   it('clears stale overview auth errors when the session is cleared', () => {

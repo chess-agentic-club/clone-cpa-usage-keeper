@@ -66,7 +66,13 @@ const resources = {
         login_rate_limited: 'Too many attempts. Please wait a moment and try again.',
         login_failed: 'Unable to complete login right now',
         api_key_login_failed: 'Unable to open the API Key dashboard right now',
-        session_expired: 'Your session expired. Please sign in again.'
+        session_expired: 'Your session expired. Please sign in again.',
+        open_usage_from_open_webui: 'Open Usage from Open WebUI'
+      },
+      usage_scope: {
+        current_user: 'My usage',
+        stale: 'Catalog data is delayed',
+        load_failed: 'Unable to load usage scope'
       },
       key_overview: {
         eyebrow: 'Key overview',
@@ -912,7 +918,13 @@ const resources = {
         login_rate_limited: '尝试次数过多，请稍后再试。',
         login_failed: '当前无法完成登录',
         api_key_login_failed: '当前无法打开 API Key 看板',
-        session_expired: '登录状态已失效，请重新登录。'
+        session_expired: '登录状态已失效，请重新登录。',
+        open_usage_from_open_webui: '请从 Open WebUI 打开用量'
+      },
+      usage_scope: {
+        current_user: '我的用量',
+        stale: '目录数据延迟',
+        load_failed: '无法加载用量范围'
       },
       key_overview: {
         eyebrow: 'API Key 概览',
@@ -1758,7 +1770,13 @@ const resources = {
         login_rate_limited: '嘗試次數過多，請稍後再試。',
         login_failed: '目前無法完成登入',
         api_key_login_failed: '目前無法開啟 API Key 看板',
-        session_expired: '登入狀態已失效，請重新登入。'
+        session_expired: '登入狀態已失效，請重新登入。',
+        open_usage_from_open_webui: '請從 Open WebUI 開啟用量'
+      },
+      usage_scope: {
+        current_user: '我的用量',
+        stale: '目錄資料延遲',
+        load_failed: '無法載入用量範圍'
       },
       key_overview: {
         eyebrow: 'API Key 總覽',

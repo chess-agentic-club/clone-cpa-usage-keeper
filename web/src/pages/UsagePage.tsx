@@ -2,6 +2,8 @@ import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as R
 import { useTranslation } from 'react-i18next';
 import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageAPIKeyOptions, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
 import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, SourceCapabilitiesResponse, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
+import { UsageScopeSelector } from '@/features/usage-scope/UsageScopeSelector';
+import { useUsageScope } from '@/features/usage-scope/useUsageScope';
 import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
@@ -806,7 +808,7 @@ export const triggerBrowserURLDownload = (url: string) => {
   link.remove();
 };
 
-export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
+export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthRequired?: () => void; authMode?: 'standalone' | 'embedded_jwt' }) {
   const { t, i18n } = useTranslation();
   const isMobile = useMediaQuery('(max-width: 768px)');
   const isEmbeddedInCPAMC = isCPAMCEmbed();
@@ -817,6 +819,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [activeTab, setActiveTab] = useState<UsageTab>(() => {
     const loadedTab = loadUsageTab();
     return isEmbeddedInCPAMC && loadedTab === 'ranking' ? DEFAULT_USAGE_TAB : loadedTab;
+  });
+  const usingEmbeddedScope = authMode === 'embedded_jwt';
+  const embeddedScope = useUsageScope({
+    role: 'admin',
+    enabled: usingEmbeddedScope && activeTab === 'analysis',
+    onAuthRequired,
   });
   const activateUsageTab = useCallback((tab: UsageTab) => {
     setActiveTab(tab);
@@ -839,7 +847,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [timeRangeState, setTimeRangeState] = useState<StoredUsageRangeState>(loadedTimeRange.state);
   const { range: timeRange, customRange } = timeRangeState;
   const [realtimeWindow, setRealtimeWindow] = useState<OverviewRealtimeWindow>(loadRealtimeWindow);
-  const [selectedApiKeyId, setSelectedApiKeyId] = useState(loadSelectedApiKeyId);
+  const [selectedApiKeyId, setSelectedApiKeyId] = useState(() => usingEmbeddedScope ? '' : loadSelectedApiKeyId());
   const [apiKeyOptions, setApiKeyOptions] = useState<CpaApiKeyOption[]>([]);
   const [apiKeyOptionsLoaded, setApiKeyOptionsLoaded] = useState(false);
   const [apiKeyOptionsResolved, setApiKeyOptionsResolved] = useState(false);
@@ -850,7 +858,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     apiKeyOptionsResolved,
   );
   const apiKeyFilterReady = apiKeyFilterRequestState.ready;
-  const requestApiKeyId = apiKeyFilterRequestState.apiKeyId;
+  const requestApiKeyId = usingEmbeddedScope ? '' : apiKeyFilterRequestState.apiKeyId;
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null);
   const apiKeyOptionsRequestControllerRef = useRef<AbortController | null>(null);
@@ -1280,7 +1288,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [onAuthRequired, showTopNotice, t]);
 
   const loadAnalysis = useCallback(async () => {
-    if (!usageRangeQuery.valid || !apiKeyFilterReady) return;
+    if (!usageRangeQuery.valid || (!usingEmbeddedScope && !apiKeyFilterReady)) return;
     analysisRequestControllerRef.current?.abort();
     const controller = new AbortController();
     analysisRequestControllerRef.current = controller;
@@ -1293,8 +1301,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setAnalysisLatencyData(null);
 
     await loadAnalysisSections({
-      loadCore: () => fetchAnalysis(usageRangeQuery, controller.signal, requestApiKeyId),
-      loadLatency: () => fetchAnalysisLatency(usageRangeQuery, controller.signal, requestApiKeyId),
+      loadCore: () => fetchAnalysis(usageRangeQuery, controller.signal, requestApiKeyId, usingEmbeddedScope ? embeddedScope.selection : undefined),
+      loadLatency: () => fetchAnalysisLatency(usageRangeQuery, controller.signal, requestApiKeyId, usingEmbeddedScope ? embeddedScope.selection : undefined),
       onCoreLoaded: (response) => {
         if (analysisRequestControllerRef.current !== controller) return;
         setAnalysisData(response);
@@ -1332,7 +1340,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (analysisRequestControllerRef.current === controller) {
       analysisRequestControllerRef.current = null;
     }
-  }, [apiKeyFilterReady, onAuthRequired, recoverRangeBoundsConflict, requestApiKeyId, usageRangeQuery]);
+  }, [apiKeyFilterReady, embeddedScope.selection, onAuthRequired, recoverRangeBoundsConflict, requestApiKeyId, usageRangeQuery, usingEmbeddedScope]);
 
   useEffect(() => {
     try {
@@ -1412,6 +1420,15 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [selectedApiKeyId, usageRangeQuery]);
 
   useEffect(() => {
+    if (!usingEmbeddedScope) return
+    try {
+      localStorage.removeItem(API_KEY_FILTER_STORAGE_KEY)
+    } catch {
+      // Embedded scope selection persists independently and contains opaque IDs only.
+    }
+  }, [usingEmbeddedScope]);
+
+  useEffect(() => {
     // Credentials 列表、quota cache 和 task polling 都跟页面可见性绑定，隐藏页不保持刷新或轮询。
     const syncPageVisible = () => setPageVisible(isUsagePageVisible());
     syncPageVisible();
@@ -1460,6 +1477,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     // Wait for status so LiteLLM never probes CPA-only routes. The generic
     // options endpoint then supplies either CPA keys or virtual-key hashes.
     if (status === null) return undefined;
+    if (usingEmbeddedScope) {
+      setApiKeyOptions([]);
+      setApiKeyOptionsLoaded(true);
+      setApiKeyOptionsResolved(true);
+      return undefined;
+    }
     if (!sourceCapabilities.apiKeyAnalytics) {
       setApiKeyOptions([]);
       setApiKeyOptionsLoaded(true);
@@ -1471,7 +1494,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       apiKeyOptionsRequestControllerRef.current?.abort();
       apiKeyOptionsRequestControllerRef.current = null;
     };
-  }, [loadApiKeyOptions, sourceCapabilities.apiKeyAnalytics, status]);
+  }, [loadApiKeyOptions, sourceCapabilities.apiKeyAnalytics, status, usingEmbeddedScope]);
 
   useEffect(() => {
     if (status === null) return;
@@ -2168,7 +2191,18 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   >
                     <div className={styles.usageFilterTransitionInner}>
                       <div className={styles.usageFilterBar}>
-                    <div className={styles.apiKeyFilterGroup}>
+                    {usingEmbeddedScope && activeTab === 'analysis' && (
+                      <UsageScopeSelector
+                        role="admin"
+                        selection={embeddedScope.selection}
+                        users={embeddedScope.users}
+                        keys={embeddedScope.keys}
+                        loading={embeddedScope.loading}
+                        error={embeddedScope.error}
+                        onSelectionChange={embeddedScope.setSelection}
+                      />
+                    )}
+                    {!usingEmbeddedScope && <div className={styles.apiKeyFilterGroup}>
                     <label className={`${styles.usageFilterField} ${styles.apiKeyFilterField}`.trim()}>
                       <span className={styles.usageFilterLabel}>{t('usage_stats.api_key_filter')}</span>
                       <Select
@@ -2181,7 +2215,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                         dropdownMinWidth={180}
                       />
                     </label>
-                  </div>
+                  </div>}
                     <TimeRangeControl
                       value={timeRange}
                       customRange={activeCustomRange}
