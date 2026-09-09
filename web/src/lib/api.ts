@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsageScopeKeysResponse, type UsageScopeSelection, type UsageScopeUsersResponse, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type IdentityMappingUpdate, type IdentityMappingsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsageScopeKeysResponse, type UsageScopeSelection, type UsageScopeUsersResponse, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -339,6 +339,21 @@ export async function fetchUsageScopeKeys(userCatalogId: string, signal?: AbortS
   const response = await apiFetch(`${apiPath('/usage/scope/keys')}${query ? `?${query}` : ''}`, { signal, cache: 'no-store' })
   if (!response.ok) await parseApiError(response, `Failed to load usage scope keys: ${response.status}`)
   return response.json()
+}
+
+export async function fetchIdentityMappings(signal?: AbortSignal): Promise<IdentityMappingsResponse> {
+  const response = await apiFetch(apiPath('/admin/identity-mappings'), { signal, cache: 'no-store' })
+  if (!response.ok) await parseApiError(response, `Failed to load identity mappings: ${response.status}`)
+  return response.json()
+}
+
+export async function updateIdentityMapping(identityId: string, body: IdentityMappingUpdate): Promise<void> {
+  const response = await apiFetch(apiPath(`/admin/identity-mappings/${encodeURIComponent(identityId)}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) await parseApiError(response, `Failed to update identity mapping: ${response.status}`)
 }
 
 export async function fetchKeyOverview(request: UsageRangeRequest, signal?: AbortSignal, scope?: UsageScopeSelection): Promise<UsageOverviewResponse> {

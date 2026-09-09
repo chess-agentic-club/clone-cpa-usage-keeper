@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageAPIKeyOptions, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
-import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, SourceCapabilitiesResponse, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
+import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeySettings, fetchIdentityMappings, fetchStatus, fetchUpdateCheck, fetchUsageAPIKeyOptions, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageScopeUsers, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
+import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, IdentityMapping, OverviewRealtimeWindow, SourceCapabilitiesResponse, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageScopeOption, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { UsageScopeSelector } from '@/features/usage-scope/UsageScopeSelector';
 import { useUsageScope } from '@/features/usage-scope/useUsageScope';
 import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
@@ -21,6 +21,7 @@ import {
   OverviewRealtimePanel,
   AnalysisPanel,
   ApiKeySettingsCard,
+  IdentityMappingsCard,
   SessionSettingsCard,
   PriceSettingsCard,
   AuthFileCredentialsSection,
@@ -972,6 +973,12 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
   const [apiKeySettingsError, setApiKeySettingsError] = useState('');
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
+  const [identityMappings, setIdentityMappings] = useState<IdentityMapping[]>([]);
+  const [identityMappingSourceUsers, setIdentityMappingSourceUsers] = useState<UsageScopeOption[]>([]);
+  const [identityMappingsLoading, setIdentityMappingsLoading] = useState(false);
+  const [identityMappingsError, setIdentityMappingsError] = useState('');
+  const [identityMappingsStale, setIdentityMappingsStale] = useState(false);
+  const identityMappingsRequestControllerRef = useRef<AbortController | null>(null);
   const [authSessions, setAuthSessions] = useState<AuthManagedSessionItem[]>([]);
   const [authSessionsLoading, setAuthSessionsLoading] = useState(false);
   const [authSessionsError, setAuthSessionsError] = useState('');
@@ -1186,6 +1193,45 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
       }
     }
   }, [onAuthRequired]);
+
+  const loadIdentityMappings = useCallback(async () => {
+    identityMappingsRequestControllerRef.current?.abort();
+    const controller = new AbortController();
+    identityMappingsRequestControllerRef.current = controller;
+    setIdentityMappingsLoading(true);
+    setIdentityMappingsError('');
+    try {
+      const [mappingResponse, usersResponse] = await Promise.all([
+        fetchIdentityMappings(controller.signal),
+        fetchUsageScopeUsers(controller.signal),
+      ]);
+      if (identityMappingsRequestControllerRef.current !== controller) return;
+      setIdentityMappings(mappingResponse.mappings ?? []);
+      setIdentityMappingSourceUsers(usersResponse.users ?? []);
+      setIdentityMappingsStale(mappingResponse.stale || usersResponse.stale);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (identityMappingsRequestControllerRef.current === controller) {
+        setIdentityMappings([]);
+        setIdentityMappingSourceUsers([]);
+        setIdentityMappingsStale(false);
+      }
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      setIdentityMappingsError(
+        error instanceof ApiError && error.status === 403
+          ? t('usage_stats.identity_mappings_forbidden')
+          : t('usage_stats.identity_mappings_load_failed'),
+      );
+    } finally {
+      if (identityMappingsRequestControllerRef.current === controller) {
+        setIdentityMappingsLoading(false);
+        identityMappingsRequestControllerRef.current = null;
+      }
+    }
+  }, [onAuthRequired, t]);
 
   const loadAuthSessions = useCallback(async () => {
     authSessionsRequestControllerRef.current?.abort();
@@ -1805,11 +1851,14 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
       if (settingsSectionVisibility.showCPAAPIKeySettings) {
         requests.push(loadApiKeySettings());
       }
+      if (usingEmbeddedScope) {
+        requests.push(loadIdentityMappings());
+      }
       await Promise.all(requests);
       return;
     }
     await Promise.all([loadUsage(), loadActivity(), loadRealtime()]);
-  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadEventFilterOptions, loadEvents, loadPricing, loadRealtime, loadUsage, refreshCredentials, refreshRanking, settingsSectionVisibility.showCPAAPIKeySettings]);
+  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadEventFilterOptions, loadEvents, loadIdentityMappings, loadPricing, loadRealtime, loadUsage, refreshCredentials, refreshRanking, settingsSectionVisibility.showCPAAPIKeySettings, usingEmbeddedScope]);
 
   const refreshAutoRefreshTab = useCallback(async () => {
     if (!apiKeyFilterReady && shouldShowRangeControls(activeTab)) return;
@@ -1968,6 +2017,9 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
       apiKeySettingsRequestControllerRef.current?.abort();
       apiKeySettingsRequestControllerRef.current = null;
       setApiKeySettingsLoading(false);
+      identityMappingsRequestControllerRef.current?.abort();
+      identityMappingsRequestControllerRef.current = null;
+      setIdentityMappingsLoading(false);
       authSessionsRequestControllerRef.current?.abort();
       authSessionsRequestControllerRef.current = null;
       setAuthSessionsLoading(false);
@@ -1976,14 +2028,19 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
     if (settingsSectionVisibility.showCPAAPIKeySettings) {
       void loadApiKeySettings();
     }
+    if (usingEmbeddedScope) {
+      void loadIdentityMappings();
+    }
     void loadAuthSessions();
     return () => {
       apiKeySettingsRequestControllerRef.current?.abort();
       apiKeySettingsRequestControllerRef.current = null;
+      identityMappingsRequestControllerRef.current?.abort();
+      identityMappingsRequestControllerRef.current = null;
       authSessionsRequestControllerRef.current?.abort();
       authSessionsRequestControllerRef.current = null;
     };
-  }, [activeTab, loadApiKeySettings, loadAuthSessions, settingsSectionVisibility.showCPAAPIKeySettings]);
+  }, [activeTab, loadApiKeySettings, loadAuthSessions, loadIdentityMappings, settingsSectionVisibility.showCPAAPIKeySettings, usingEmbeddedScope]);
 
   useEffect(() => {
     const next = sanitizeRequestEventFilters(
@@ -2266,6 +2323,7 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
             {activeTab === 'settings' && pricingError && <div className={styles.errorBox}>{pricingError === 'AUTH_REQUIRED' ? t('auth.session_expired') : pricingError}</div>}
             {activeTab === 'settings' && authSessionsError && <div className={styles.errorBox}>{authSessionsError}</div>}
             {activeTab === 'settings' && settingsSectionVisibility.showCPAAPIKeySettings && apiKeySettingsError && <div className={styles.errorBox}>{apiKeySettingsError}</div>}
+            {activeTab === 'settings' && usingEmbeddedScope && identityMappingsError && <div className={styles.errorBox}>{identityMappingsError}</div>}
             {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (pricingError || authSessionsError || (settingsSectionVisibility.showCPAAPIKeySettings ? apiKeySettingsError : '')) : '') && displayStatusError && <div className={styles.errorBox}>{displayStatusError}</div>}
 
             {activeTab === 'overview' && (
@@ -2473,6 +2531,15 @@ export function UsagePage({ onAuthRequired, authMode = 'standalone' }: { onAuthR
                     savingId={apiKeySettingsSavingId}
                     onSaveAlias={handleSaveApiKeyAlias}
                     onNotice={showTopNotice}
+                  />
+                )}
+                {usingEmbeddedScope && (
+                  <IdentityMappingsCard
+                    mappings={identityMappings}
+                    sourceUsers={identityMappingSourceUsers}
+                    loading={identityMappingsLoading}
+                    stale={identityMappingsStale}
+                    onRefresh={loadIdentityMappings}
                   />
                 )}
                 <PriceSettingsCard

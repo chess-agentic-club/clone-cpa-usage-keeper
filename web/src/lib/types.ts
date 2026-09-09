@@ -38,6 +38,29 @@ export interface UsageScopeSelection {
   keyCatalogId: string
 }
 
+// These DTOs intentionally contain only the server's safe labels and opaque
+// catalog IDs. Source-system references and key material never cross this UI
+// boundary.
+export interface IdentityMapping {
+  id: string
+  label: string
+  source_user_catalog_id: string
+  source_user_label: string
+  match_method: string
+  confirmed: boolean
+}
+
+export interface IdentityMappingsResponse {
+  source_system: string
+  synced_at: string
+  stale: boolean
+  mappings: IdentityMapping[]
+}
+
+export type IdentityMappingUpdate = {
+  source_user_catalog_id: string
+}
+
 export type AuthManagedSessionKind = 'admin' | 'api_key'
 export type AuthManagedSessionSource = 'standard' | 'embed'
 

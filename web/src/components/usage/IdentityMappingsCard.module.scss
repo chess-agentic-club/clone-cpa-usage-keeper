@@ -1,0 +1,70 @@
+.card {
+  min-width: 0;
+}
+
+.body {
+  padding: 1rem 1.25rem;
+}
+
+.list {
+  display: grid;
+  gap: .75rem;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) auto;
+  align-items: end;
+  gap: .75rem;
+  padding: .75rem;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, .25));
+  border-radius: .625rem;
+}
+
+.summary,
+.selectorField {
+  display: grid;
+  gap: .3rem;
+  min-width: 0;
+}
+
+.fieldLabel {
+  color: var(--text-secondary, #6b7280);
+  font-size: .75rem;
+  font-weight: 600;
+}
+
+.identityLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.matchState,
+.stale,
+.error,
+.hint {
+  margin: 0;
+  font-size: .8125rem;
+}
+
+.matchState,
+.stale {
+  color: var(--text-secondary, #6b7280);
+}
+
+.stale,
+.error {
+  margin-bottom: .75rem;
+}
+
+.error {
+  color: var(--color-danger, #b42318);
+}
+
+@media (max-width: 720px) {
+  .item {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
