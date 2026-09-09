@@ -40,17 +40,12 @@ vi.mock('react-i18next', () => ({
 const unmappedIdentity: IdentityMapping = {
   id: 'identity-opaque-1',
   label: 'Open WebUI user: Alex',
-  source_user_catalog_id: '',
-  source_user_label: '',
-  match_method: '',
   confirmed: false,
 }
 
 const ambiguousIdentity: IdentityMapping = {
   id: 'identity-opaque-2',
   label: 'Open WebUI user: Blair',
-  source_user_catalog_id: '',
-  source_user_label: '',
   match_method: 'ambiguous',
   confirmed: false,
 }

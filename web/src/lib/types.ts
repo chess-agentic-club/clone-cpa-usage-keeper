@@ -44,9 +44,9 @@ export interface UsageScopeSelection {
 export interface IdentityMapping {
   id: string
   label: string
-  source_user_catalog_id: string
-  source_user_label: string
-  match_method: string
+  source_user_catalog_id?: string
+  source_user_label?: string
+  match_method?: string
   confirmed: boolean
 }
 

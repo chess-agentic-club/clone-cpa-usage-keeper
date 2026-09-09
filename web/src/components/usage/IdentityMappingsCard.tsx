@@ -25,7 +25,7 @@ const getMappingState = (mapping: IdentityMapping, t: (key: string) => string) =
 export function IdentityMappingsCard({ mappings, sourceUsers, loading = false, stale = false, onRefresh }: IdentityMappingsCardProps) {
   const { t } = useTranslation()
   const initialSelections = useMemo(
-    () => Object.fromEntries(mappings.map((mapping) => [mapping.id, mapping.source_user_catalog_id])),
+    () => Object.fromEntries(mappings.map((mapping) => [mapping.id, mapping.source_user_catalog_id ?? ''])),
     [mappings],
   )
   const [selections, setSelections] = useState<Record<string, string>>(initialSelections)
