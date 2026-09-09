@@ -21,6 +21,15 @@ services:
 #     - USAGE_SOURCE=litellm
 #     - LITELLM_BASE_URL=http://litellm:4000
 #     - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
+#     - SOURCE_CATALOG_SYNC_INTERVAL=30s
+#     - AUTH_ENABLED=true
+#     - AUTH_MODE=embedded_jwt
+#     - JWT_ISSUER=${OPENWEBUI_JWT_ISSUER:?set OPENWEBUI_JWT_ISSUER}
+#     - JWT_AUDIENCE=cpa-usage-keeper
+#     - JWKS_URL=${OPENWEBUI_JWKS_URL:?set OPENWEBUI_JWKS_URL}
+#     - JWT_ALLOWED_ALGORITHMS=RS256
+#     - JWT_ROLE_CLAIM=role
+#     - WORK_DIR=/data
 #   env_file:
 #     - .env
 #   volumes:

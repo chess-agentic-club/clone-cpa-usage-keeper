@@ -1,5 +1,7 @@
 .PHONY: verify verify-backend verify-frontend verify-docker
 
+# The parent integration repository owns the Open WebUI demo and cross-app E2E;
+# this target intentionally verifies every backend/frontend artifact in Keeper.
 verify: verify-backend verify-frontend
 
 verify-backend:

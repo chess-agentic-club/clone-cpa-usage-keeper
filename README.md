@@ -75,6 +75,7 @@ CPA Usage Keeper is a standalone persistence and analytics dashboard for [CLIPro
 - Monitor Auth Files and AI Providers with usage metrics, health inspection, and quota refresh
 - Opt into community rankings by overall score, tokens, requests, cache rate, average TTFT/latency, or peak TPM/RPM
 - Open a read-only usage view scoped to an individual CPA API Key
+- Accept trusted Open WebUI JWT sessions and enforce per-user/per-key usage scopes in embedded deployments
 - Sync CPA Auth Files, API Keys, and AI Providers automatically, and maintain model pricing for cost estimates
 - Deploy with Docker/Docker Compose, Homebrew, binaries, or systemd, with optional password protection
 - Embed the Keeper dashboard in CPAMC through the CPA plugin
@@ -277,9 +278,14 @@ services:
       USAGE_SOURCE: litellm
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
-      VIEWER_KEY_REVALIDATION_TTL: 1m
+      SOURCE_CATALOG_SYNC_INTERVAL: 30s
       AUTH_ENABLED: "true"
-      LOGIN_PASSWORD: ${KEEPER_LOGIN_PASSWORD:?set KEEPER_LOGIN_PASSWORD}
+      AUTH_MODE: embedded_jwt
+      JWT_ISSUER: ${OPENWEBUI_JWT_ISSUER:?set OPENWEBUI_JWT_ISSUER}
+      JWT_AUDIENCE: cpa-usage-keeper
+      JWKS_URL: ${OPENWEBUI_JWKS_URL:?set OPENWEBUI_JWKS_URL}
+      JWT_ALLOWED_ALGORITHMS: RS256
+      JWT_ROLE_CLAIM: role
       WORK_DIR: /data
     volumes:
       - ./litellm-keeper-data:/data
@@ -290,12 +296,26 @@ API-key filters. CPA Auth Files, quota, and CPA API-key management are not
 available in LiteLLM mode. Switching sources requires a separate deployment
 and database (`USAGE_SOURCE=cliproxy` or `litellm`).
 
-`LITELLM_BASE_URL` and `LITELLM_MASTER_KEY` are server-side poller settings;
-the master key must never be sent to the browser or used for dashboard login.
-Create LiteLLM virtual keys for viewers and have them use **API Key view**.
-Keeper retains only the source-owned canonical identity and server-provided
-display label. `VIEWER_KEY_REVALIDATION_TTL` controls the successful viewer
-validation cache and defaults to `1m`.
+In `embedded_jwt` mode, Open WebUI owns authentication and POSTs a short-lived
+RS256 assertion to Keeper. `JWT_ISSUER` must exactly equal its `iss` claim;
+`JWKS_URL` is the absolute, non-redirecting endpoint where Keeper reads the
+public signing key. A first login links to exactly one active LiteLLM user only
+when normalized email addresses match. An administrator repairs missing or
+ambiguous links under **Settings > Identity Mappings**.
+
+`LITELLM_BASE_URL` and `LITELLM_MASTER_KEY` are Keeper-server-only poller
+settings. Never send the master key, raw virtual keys, JWTs, Authorization
+headers, or full token hashes to the browser or logs. Keeper browser APIs expose
+only opaque catalog IDs and sanitized labels. Use HTTPS and a production
+identity provider outside local development.
+
+For standalone compatibility, set `AUTH_MODE=standalone`, configure a private
+`LOGIN_PASSWORD`, and leave the JWT settings empty. Administrators use the
+password; per-key viewers may use **API Key view** with their own LiteLLM
+virtual key. Embedded mode does not expose either login route.
+
+The parent integration repository contains the exact three-terminal local
+runbook and the non-production Open WebUI authentication demo.
 
 The viewer dashboard consumes a source-neutral canonical scope. A future Omni
 Router/9router integration needs a source adapter plus canonical usage
