@@ -62,6 +62,10 @@ func TestNewWithConfigKeepsMemoryDatabaseOnOriginalSinglePool(t *testing.T) {
 func databasePoolTestConfig(databasePath string) config.Config {
 	// App 测试只构造本地资源，不启动 HTTP listener 或任何远端后台任务。
 	return config.Config{
+		// NewWithConfig receives a direct fixture rather than Config.Load, which
+		// normally supplies this default. These pool tests exercise CLIProxy's
+		// local CPA-key routes.
+		UsageSource:            "cliproxy",
 		AppPort:                "invalid-port",
 		CPABaseURL:             "https://cpa.example.com",
 		CPAManagementKey:       "secret",
