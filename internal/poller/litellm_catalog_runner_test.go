@@ -37,9 +37,13 @@ func TestLiteLLMCatalogRunnerPaginatesUsersAndKeysBeforeCommit(t *testing.T) {
 		t.Fatalf("catalog key count = %d, want 4", len(keys))
 	}
 	identityAliasFallback := false
+	rawCredential := "sk-" + strings.Repeat("a", 48)
 	for _, key := range keys {
 		if strings.HasPrefix(key.SourceKeyRef, "sk-") || len(key.SourceKeyRef) > 31 || len(key.UsageGroupRef) > 31 {
 			t.Fatal("catalog persisted a non-opaque LiteLLM key reference")
+		}
+		if strings.Contains(key.DisplayName, rawCredential) || containsLiteLLMHexRun(key.DisplayName) {
+			t.Fatalf("catalog persisted credential-shaped LiteLLM alias: %+v", key)
 		}
 		identityAliasFallback = identityAliasFallback || key.DisplayName == "LiteLLM key"
 	}
@@ -120,12 +124,32 @@ func TestLiteLLMUsageKeyResolverUsesOnlyOpaqueCatalogReferences(t *testing.T) {
 }
 
 func TestLiteLLMKeyDisplayNameNeverUsesCredentialOrHashAlias(t *testing.T) {
-	credentialAlias := "sk-" + strings.Repeat("q", 48)
-	if got := liteLLMKeyDisplayName(LiteLLMKey{Token: strings.Repeat("a", 64), Alias: credentialAlias}); got != "LiteLLM key" {
-		t.Fatal("credential-shaped alias was selected for display")
+	raw := "sk-" + strings.Repeat("q", 48)
+	hash := strings.Repeat("a", 64)
+	ref, err := opaqueLiteLLMKeyRef(raw)
+	if err != nil {
+		t.Fatalf("opaqueLiteLLMKeyRef(): %v", err)
 	}
-	if got := liteLLMKeyDisplayName(LiteLLMKey{Token: strings.Repeat("a", 64), Alias: strings.Repeat("b", 64)}); got != "LiteLLM key" {
-		t.Fatal("hash-shaped alias was selected for display")
+	for _, tc := range []struct {
+		name  string
+		token string
+		alias string
+	}{
+		{name: "raw credential", token: raw, alias: raw},
+		{name: "embedded raw credential", token: raw, alias: "Team " + raw + " legacy"},
+		{name: "full hash", token: hash, alias: hash},
+		{name: "embedded full hash", token: hash, alias: "Team " + hash + " legacy"},
+		{name: "embedded source reference", token: raw, alias: "Team " + ref + " legacy"},
+		{name: "embedded usage group reference", token: raw, alias: "Team " + liteLLMAPIGroupKeyFromRef(ref) + " legacy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := liteLLMKeyDisplayName(LiteLLMKey{Token: tc.token, Alias: tc.alias}); got != "LiteLLM key" {
+				t.Fatalf("liteLLMKeyDisplayName() = %q, want generic label", got)
+			}
+		})
+	}
+	if got := liteLLMKeyDisplayName(LiteLLMKey{Token: raw, Alias: "Engineering"}); got != "Engineering" {
+		t.Fatalf("benign alias = %q", got)
 	}
 }
 
@@ -212,7 +236,7 @@ func newLiteLLMCatalogFixture(t *testing.T, failFinalKeyPage bool) *liteLLMCatal
 			if r.URL.Query().Get("page") == "1" {
 				raw := "sk-" + strings.Repeat("a", 48)
 				writeCatalogJSON(t, w, map[string]any{"keys": []map[string]any{
-					{"token": raw, "user_id": "alice", "key_alias": raw, "blocked": false},
+					{"token": raw, "user_id": "alice", "key_alias": "Team " + raw + " legacy", "blocked": false},
 					{"token": strings.Repeat("b", 64), "user_id": "alice", "key_alias": "Blocked", "blocked": true},
 				}, "total_pages": 2})
 				return

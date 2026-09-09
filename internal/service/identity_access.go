@@ -158,11 +158,11 @@ func (s *IdentityAccessService) ResolveScope(ctx context.Context, principal Acce
 	if principal.IsAdministrator {
 		var err error
 		if keyCatalogID != "" {
-			key, findErr := s.catalog.FindActiveSourceAPIKeyByID(ctx, principal.SourceSystem, keyCatalogID)
+			key, findErr := s.findEligibleActiveSourceAPIKey(ctx, principal.SourceSystem, keyCatalogID)
 			if findErr != nil {
 				return servicedto.UsageScope{}, ErrUsageScopeForbidden
 			}
-			if userCatalogID != "" && (key.SourceUserID != userCatalogID || !s.isActiveSourceUser(ctx, principal.SourceSystem, userCatalogID)) {
+			if userCatalogID != "" && key.SourceUserID != userCatalogID {
 				return servicedto.UsageScope{}, ErrUsageScopeForbidden
 			}
 			keys = []entities.SourceAPIKey{key}
@@ -174,15 +174,15 @@ func (s *IdentityAccessService) ResolveScope(ctx context.Context, principal Acce
 		}
 	} else {
 		if keyCatalogID != "" {
-			key, findErr := s.catalog.FindActiveSourceAPIKeyByID(ctx, principal.SourceSystem, keyCatalogID)
+			key, findErr := s.findEligibleActiveSourceAPIKey(ctx, principal.SourceSystem, keyCatalogID)
 			if findErr != nil || key.SourceUserID != principal.SourceUserID {
 				return servicedto.UsageScope{}, ErrUsageScopeForbidden
 			}
 			keys = []entities.SourceAPIKey{key}
 		} else {
-			allKeys, listErr := s.catalog.ListActiveSourceAPIKeys(ctx, principal.SourceSystem)
+			allKeys, listErr := s.listEligibleActiveSourceAPIKeys(ctx, principal.SourceSystem)
 			if listErr != nil {
-				return servicedto.UsageScope{}, ErrUsageScopeUnavailable
+				return servicedto.UsageScope{}, listErr
 			}
 			for _, key := range allKeys {
 				if key.SourceUserID == principal.SourceUserID {
@@ -225,7 +225,7 @@ func (s *IdentityAccessService) ListScopeKeys(ctx context.Context, principal Acc
 	if principal.IsAdministrator && strings.TrimSpace(userCatalogID) != "" && !s.isActiveSourceUser(ctx, principal.SourceSystem, strings.TrimSpace(userCatalogID)) {
 		return nil, ErrUsageScopeForbidden
 	}
-	keys, err := s.catalog.ListActiveSourceAPIKeys(ctx, principal.SourceSystem)
+	keys, err := s.listEligibleActiveSourceAPIKeys(ctx, principal.SourceSystem)
 	if err != nil {
 		return nil, ErrUsageScopeUnavailable
 	}
@@ -285,7 +285,7 @@ func (s *IdentityAccessService) keysForActiveUser(ctx context.Context, sourceSys
 	if !s.isActiveSourceUser(ctx, sourceSystem, userCatalogID) {
 		return nil, ErrUsageScopeForbidden
 	}
-	keys, err := s.catalog.ListActiveSourceAPIKeys(ctx, sourceSystem)
+	keys, err := s.listEligibleActiveSourceAPIKeys(ctx, sourceSystem)
 	if err != nil {
 		return nil, ErrUsageScopeUnavailable
 	}
@@ -296,6 +296,45 @@ func (s *IdentityAccessService) keysForActiveUser(ctx context.Context, sourceSys
 		}
 	}
 	return filtered, nil
+}
+
+// listEligibleActiveSourceAPIKeys is the single ownership gate for selector
+// keys. A key must be active and its catalog owner must be active; LiteLLM's
+// ownerless keys deliberately point at an inactive synthetic user and are
+// therefore never selectable. Admin all-source scope does not call this gate.
+func (s *IdentityAccessService) listEligibleActiveSourceAPIKeys(ctx context.Context, sourceSystem string) ([]entities.SourceAPIKey, error) {
+	keys, err := s.catalog.ListActiveSourceAPIKeys(ctx, sourceSystem)
+	if err != nil {
+		return nil, err
+	}
+	users, err := s.catalog.ListActiveSourceUsers(ctx, sourceSystem)
+	if err != nil {
+		return nil, err
+	}
+	activeOwners := make(map[string]struct{}, len(users))
+	for _, user := range users {
+		activeOwners[user.ID] = struct{}{}
+	}
+	eligible := make([]entities.SourceAPIKey, 0, len(keys))
+	for _, key := range keys {
+		if _, active := activeOwners[key.SourceUserID]; active {
+			eligible = append(eligible, key)
+		}
+	}
+	return eligible, nil
+}
+
+func (s *IdentityAccessService) findEligibleActiveSourceAPIKey(ctx context.Context, sourceSystem, keyCatalogID string) (entities.SourceAPIKey, error) {
+	keys, err := s.listEligibleActiveSourceAPIKeys(ctx, sourceSystem)
+	if err != nil {
+		return entities.SourceAPIKey{}, err
+	}
+	for _, key := range keys {
+		if key.ID == strings.TrimSpace(keyCatalogID) {
+			return key, nil
+		}
+	}
+	return entities.SourceAPIKey{}, ErrUsageScopeForbidden
 }
 
 func (s *IdentityAccessService) isActiveSourceUser(ctx context.Context, sourceSystem, userID string) bool {

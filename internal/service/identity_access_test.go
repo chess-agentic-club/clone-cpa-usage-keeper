@@ -195,6 +195,65 @@ func TestResolveScopeRejectsInactiveAndUnownedKeys(t *testing.T) {
 	}
 }
 
+func TestScopeEligibilityRequiresAnActiveKeyOwner(t *testing.T) {
+	access, alice, _ := seededIdentityAccessService(t)
+	ctx := context.Background()
+	if err := access.catalog.ApplySourceSnapshot(ctx, repository.SourceCatalogSnapshot{
+		SourceSystem: "litellm", SyncedAt: time.Date(2026, 9, 8, 12, 2, 0, 0, time.UTC),
+		Users: []repository.SourceUserInput{
+			{SourceUserRef: "alice", Email: "alice@example.com", Active: true},
+			{SourceUserRef: "bob", Email: "bob@example.com", Active: true},
+			{SourceUserRef: "internal-unowned", DisplayName: "Unowned keys", Active: false},
+		},
+		Keys: []repository.SourceAPIKeyInput{
+			{SourceKeyRef: "alice-key-a", SourceUserRef: "alice", UsageGroupRef: "alice-a", Active: true},
+			{SourceKeyRef: "alice-key-b", SourceUserRef: "alice", UsageGroupRef: "alice-b", Active: true},
+			{SourceKeyRef: "bob-key", SourceUserRef: "bob", UsageGroupRef: "bob", Active: true},
+			{SourceKeyRef: "unowned-key", SourceUserRef: "internal-unowned", UsageGroupRef: "unowned", Active: true},
+		},
+	}); err != nil {
+		t.Fatalf("seed active unowned key: %v", err)
+	}
+	rawKeys, err := access.catalog.ListActiveSourceAPIKeys(ctx, "litellm")
+	if err != nil {
+		t.Fatalf("ListActiveSourceAPIKeys(): %v", err)
+	}
+	var unownedKey entities.SourceAPIKey
+	for _, key := range rawKeys {
+		if key.UsageGroupRef == "unowned" {
+			unownedKey = key
+			break
+		}
+	}
+	if unownedKey.ID == "" || unownedKey.SourceUserID == "" {
+		t.Fatal("seed did not persist the active key with its inactive synthetic owner")
+	}
+
+	admin := mustAdmin(t, access, ctx)
+	allSource, err := access.ResolveScope(ctx, admin, ScopeSelection{})
+	if err != nil || allSource.Mode != servicedto.UsageScopeAllSource {
+		t.Fatalf("admin all-source scope = %#v, %v", allSource, err)
+	}
+	keys, err := access.ListScopeKeys(ctx, admin, "")
+	if err != nil || len(keys) != 3 {
+		t.Fatalf("admin eligible keys = %#v, %v; want three keys with active owners", keys, err)
+	}
+	for _, key := range keys {
+		if key.ID == unownedKey.ID {
+			t.Fatal("active key with inactive owner entered the administrator selector")
+		}
+	}
+	if _, err := access.ListScopeKeys(ctx, admin, unownedKey.SourceUserID); err != ErrUsageScopeForbidden {
+		t.Fatalf("inactive owner selector error = %v, want ErrUsageScopeForbidden", err)
+	}
+	if _, err := access.ResolveScope(ctx, admin, ScopeSelection{KeyCatalogID: unownedKey.ID}); err != ErrUsageScopeForbidden {
+		t.Fatalf("direct unowned key selection error = %v, want ErrUsageScopeForbidden", err)
+	}
+	if _, err := access.ResolveScope(ctx, alice, ScopeSelection{KeyCatalogID: unownedKey.ID}); err != ErrUsageScopeForbidden {
+		t.Fatalf("user unowned key selection error = %v, want ErrUsageScopeForbidden", err)
+	}
+}
+
 func TestResolveIdentityAutoLinksOnlyOneExactNormalizedEmailMatch(t *testing.T) {
 	access, _, _ := seededIdentityAccessService(t)
 	ctx := context.Background()

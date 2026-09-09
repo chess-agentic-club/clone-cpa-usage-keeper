@@ -296,7 +296,7 @@ func liteLLMViewerDisplayName(info liteLLMVirtualKeyInfo, rawKey, responseKey, c
 	if displayName == "" {
 		displayName = strings.TrimSpace(info.KeyName)
 	}
-	if displayName == "" || strings.EqualFold(displayName, strings.TrimSpace(rawKey)) || strings.EqualFold(displayName, strings.TrimSpace(responseKey)) || strings.EqualFold(displayName, canonical) || strings.HasPrefix(strings.ToLower(displayName), "sk-") || isLiteLLMHash(displayName) {
+	if displayName == "" || containsLiteLLMSensitiveAlias(displayName, rawKey) || containsLiteLLMSensitiveAlias(displayName, responseKey) || strings.Contains(strings.ToLower(displayName), strings.ToLower(strings.TrimSpace(canonical))) {
 		return "LiteLLM key"
 	}
 	displayCanonical, err := canonicalLiteLLMKeyRef(displayName)

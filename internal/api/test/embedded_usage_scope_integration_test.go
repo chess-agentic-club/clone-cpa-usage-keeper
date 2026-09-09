@@ -31,6 +31,11 @@ const (
 	sensitiveGroupBob     = "internal-sensitive-group-bob"
 )
 
+var (
+	embeddedLegacyRawKey = "sk-" + strings.Repeat("r", 48)
+	embeddedLegacyHash   = strings.Repeat("e", 64)
+)
+
 type embeddedUsageIDs struct {
 	AliceUser       string
 	BobUser         string
@@ -38,6 +43,8 @@ type embeddedUsageIDs struct {
 	AliceKeyA       string
 	AliceKeyB       string
 	BobKey          string
+	UnownedUser     string
+	UnownedKey      string
 	PendingIdentity string
 }
 
@@ -66,6 +73,7 @@ func TestEmbeddedUsageUserAndAdministratorScopesCannotEscapePolicy(t *testing.T)
 	assertEmbeddedAnalysisTokens(t, fixture.router, fixture.adminToken, "/api/v1/usage/analysis?range=24h&user_catalog_id="+url.QueryEscape(fixture.ids.AliceUser), 30)
 	assertEmbeddedAnalysisTokens(t, fixture.router, fixture.adminToken, "/api/v1/usage/analysis?range=24h&user_catalog_id="+url.QueryEscape(fixture.ids.AliceUser)+"&key_catalog_id="+url.QueryEscape(fixture.ids.AliceKeyB), 20)
 	assertEmbeddedStatus(t, fixture.router, fixture.adminToken, "/api/v1/usage/analysis?range=24h&user_catalog_id="+url.QueryEscape(fixture.ids.AliceUser)+"&key_catalog_id="+url.QueryEscape(fixture.ids.BobKey), http.StatusForbidden)
+	assertEmbeddedStatus(t, fixture.router, fixture.adminToken, "/api/v1/usage/analysis?range=24h&key_catalog_id="+url.QueryEscape(fixture.ids.UnownedKey), http.StatusForbidden)
 
 	assertEmbeddedTokens(t, fixture.router, fixture.carolToken, "/api/v1/key-overview?range=24h", 0)
 	assertEmbeddedAnalysisTokens(t, fixture.router, fixture.carolToken, "/api/v1/key-analysis?range=24h", 0)
@@ -112,6 +120,15 @@ func TestUsageScopeSelectorsAreRoleFilteredOpaqueAndStaleAware(t *testing.T) {
 	}
 	assertScopeEnvelope(t, adminKeys.Body.Bytes(), "keys", 2, true)
 	assertNoEmbeddedUsageSecrets(t, adminKeys.Body.String())
+	allAdminKeys := performEmbeddedUsageRequest(fixture.router, fixture.adminToken, http.MethodGet, "/api/v1/usage/scope/keys", "")
+	if allAdminKeys.Code != http.StatusOK {
+		t.Fatalf("admin all keys status = %d, body=%s", allAdminKeys.Code, allAdminKeys.Body.String())
+	}
+	assertScopeEnvelope(t, allAdminKeys.Body.Bytes(), "keys", 3, true)
+	if strings.Contains(allAdminKeys.Body.String(), fixture.ids.UnownedKey) {
+		t.Fatalf("administrator selector exposed active key with inactive owner: %s", allAdminKeys.Body.String())
+	}
+	assertEmbeddedStatus(t, fixture.router, fixture.adminToken, "/api/v1/usage/scope/keys?user_catalog_id="+url.QueryEscape(fixture.ids.UnownedUser), http.StatusForbidden)
 	assertEmbeddedStatus(t, fixture.router, fixture.aliceToken, "/api/v1/usage/scope/keys?user_catalog_id="+url.QueryEscape(fixture.ids.BobUser), http.StatusForbidden)
 }
 
@@ -159,7 +176,6 @@ func seededEmbeddedUsageRouter(t *testing.T) embeddedUsageFixture {
 
 	ctx := context.Background()
 	catalog := repository.NewCatalogRepository(db)
-	canonicalLabel := sensitiveGroupA
 	if err := catalog.ApplySourceSnapshot(ctx, repository.SourceCatalogSnapshot{
 		SourceSystem: "litellm",
 		SyncedAt:     time.Now().Add(-10 * time.Minute),
@@ -167,11 +183,13 @@ func seededEmbeddedUsageRouter(t *testing.T) embeddedUsageFixture {
 			{SourceUserRef: "alice", Email: "alice@example.com", DisplayName: "Alice", Active: true},
 			{SourceUserRef: "bob", Email: "bob@example.com", DisplayName: "Bob", Active: true},
 			{SourceUserRef: "carol", Email: "carol@example.com", DisplayName: "Carol", Active: true},
+			{SourceUserRef: "internal-unowned", DisplayName: "Unowned LiteLLM keys", Active: false},
 		},
 		Keys: []repository.SourceAPIKeyInput{
-			{SourceKeyRef: "alice-a", SourceUserRef: "alice", UsageGroupRef: sensitiveGroupA, DisplayName: canonicalLabel, Active: true},
-			{SourceKeyRef: "alice-b", SourceUserRef: "alice", UsageGroupRef: sensitiveGroupB, DisplayName: "Alice secondary", Active: true},
-			{SourceKeyRef: "bob-a", SourceUserRef: "bob", UsageGroupRef: sensitiveGroupBob, DisplayName: "Bob key", Active: true},
+			{SourceKeyRef: "alice-a", SourceUserRef: "alice", UsageGroupRef: sensitiveGroupA, DisplayName: "Team " + embeddedLegacyRawKey + " legacy", Active: true},
+			{SourceKeyRef: "alice-b", SourceUserRef: "alice", UsageGroupRef: sensitiveGroupB, DisplayName: "Team " + embeddedLegacyHash + " legacy", Active: true},
+			{SourceKeyRef: "bob-a", SourceUserRef: "bob", UsageGroupRef: sensitiveGroupBob, DisplayName: "Team bob-a legacy", Active: true},
+			{SourceKeyRef: "unowned-a", SourceUserRef: "internal-unowned", UsageGroupRef: "internal-unowned-group", DisplayName: "Ownerless", Active: true},
 		},
 	}); err != nil {
 		t.Fatalf("seed source catalog: %v", err)
@@ -221,6 +239,9 @@ func seededEmbeddedUsageRouter(t *testing.T) embeddedUsageFixture {
 			ids.AliceKeyB = key.ID
 		case sensitiveGroupBob:
 			ids.BobKey = key.ID
+		case "internal-unowned-group":
+			ids.UnownedKey = key.ID
+			ids.UnownedUser = key.SourceUserID
 		}
 	}
 
@@ -410,6 +431,7 @@ func assertNoEmbeddedUsageSecrets(t *testing.T, body string) {
 		sensitiveGroupA, sensitiveGroupB, sensitiveGroupBob,
 		"internal-unowned-group", "litellm:unattributed",
 		"alice-a", "alice-b", "bob-a",
+		embeddedLegacyRawKey, embeddedLegacyHash,
 		strings.Repeat("a", 64), strings.Repeat("b", 64),
 	} {
 		if strings.Contains(body, forbidden) {

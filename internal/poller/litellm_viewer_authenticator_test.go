@@ -49,6 +49,25 @@ func TestLiteLLMViewerAuthenticatesVirtualKeyFromKeyInfo(t *testing.T) {
 	}
 }
 
+func TestLiteLLMViewerDisplayNameRejectsEmbeddedSensitiveAliases(t *testing.T) {
+	raw := "sk-" + strings.Repeat("q", 48)
+	canonical := strings.Repeat("a", 64)
+	ref, err := opaqueLiteLLMKeyRef(raw)
+	if err != nil {
+		t.Fatalf("opaqueLiteLLMKeyRef(): %v", err)
+	}
+	for _, alias := range []string{
+		"Team " + raw + " legacy",
+		"Team " + canonical + " legacy",
+		"Team " + ref + " legacy",
+		"Team " + liteLLMAPIGroupKeyFromRef(ref) + " legacy",
+	} {
+		if got := liteLLMViewerDisplayName(liteLLMVirtualKeyInfo{KeyAlias: alias}, raw, raw, canonical); got != "LiteLLM key" {
+			t.Fatalf("liteLLMViewerDisplayName(%q) = %q, want generic label", alias, got)
+		}
+	}
+}
+
 func TestLiteLLMViewerAuthenticationRejectsInvalidKeyInfoWithoutLeakingSecret(t *testing.T) {
 	futureExpiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	pastExpiry := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)

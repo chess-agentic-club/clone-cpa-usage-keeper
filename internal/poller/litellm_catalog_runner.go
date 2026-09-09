@@ -238,15 +238,45 @@ func isLiteLLMOpaqueKeyRef(ref string) bool {
 
 func liteLLMKeyDisplayName(key LiteLLMKey) string {
 	alias := strings.TrimSpace(key.Alias)
-	if alias == "" || strings.EqualFold(alias, strings.TrimSpace(key.Token)) || strings.HasPrefix(strings.ToLower(alias), "sk-") || isLiteLLMHash(alias) {
-		return "LiteLLM key"
-	}
-	canonicalAlias, aliasErr := canonicalLiteLLMKeyRef(alias)
-	canonicalToken, tokenErr := canonicalLiteLLMKeyRef(key.Token)
-	if aliasErr == nil && (tokenErr == nil && canonicalAlias == canonicalToken || strings.HasPrefix(strings.ToLower(alias), "sk-")) {
+	if alias == "" || containsLiteLLMSensitiveAlias(alias, key.Token) {
 		return "LiteLLM key"
 	}
 	return alias
+}
+
+func containsLiteLLMSensitiveAlias(alias, token string) bool {
+	lowerAlias := strings.ToLower(strings.TrimSpace(alias))
+	if lowerAlias == "" || strings.Contains(lowerAlias, "sk-") || containsLiteLLMHexRun(lowerAlias) {
+		return true
+	}
+	sensitive := []string{strings.TrimSpace(token)}
+	if canonical, err := canonicalLiteLLMKeyRef(token); err == nil {
+		sensitive = append(sensitive, canonical)
+	}
+	if ref, err := opaqueLiteLLMKeyRef(token); err == nil {
+		sensitive = append(sensitive, ref, liteLLMAPIGroupKeyFromRef(ref))
+	}
+	for _, value := range sensitive {
+		if value != "" && strings.Contains(lowerAlias, strings.ToLower(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLiteLLMHexRun(value string) bool {
+	run := 0
+	for _, character := range value {
+		if (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') {
+			run++
+			if run >= 64 {
+				return true
+			}
+			continue
+		}
+		run = 0
+	}
+	return false
 }
 
 func isLiteLLMHash(value string) bool {

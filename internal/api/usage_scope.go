@@ -184,8 +184,11 @@ func buildUsageScopeKeyOptions(keys []entities.SourceAPIKey) []usageScopeOption 
 
 func safeUsageScopeKeyLabel(key entities.SourceAPIKey) string {
 	label := safeUsageScopeLabel(key.DisplayName, "API key")
-	if strings.EqualFold(strings.TrimSpace(label), strings.TrimSpace(key.SourceKeyRef)) || strings.EqualFold(strings.TrimSpace(label), strings.TrimSpace(key.UsageGroupRef)) {
-		return "API key"
+	for _, sensitive := range []string{key.SourceKeyRef, key.UsageGroupRef} {
+		sensitive = strings.TrimSpace(sensitive)
+		if sensitive != "" && strings.Contains(strings.ToLower(label), strings.ToLower(sensitive)) {
+			return "API key"
+		}
 	}
 	return label
 }
@@ -201,7 +204,7 @@ func safeUsageScopeLabel(value, fallback string) string {
 func looksLikeCredentialValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
-	if strings.HasPrefix(lower, "sk-") || strings.Contains(lower, "authorization") || strings.Contains(lower, "bearer") || strings.Contains(lower, "secret") || strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") {
+	if strings.Contains(lower, "sk-") || strings.Contains(lower, "authorization") || strings.Contains(lower, "bearer") || strings.Contains(lower, "secret") || strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || containsHexRun(lower, 64) {
 		return true
 	}
 	for _, part := range strings.FieldsFunc(trimmed, func(r rune) bool { return r == ':' || r == '/' }) {
@@ -210,6 +213,21 @@ func looksLikeCredentialValue(value string) bool {
 		}
 	}
 	return strings.Count(trimmed, ".") >= 2 && len(trimmed) > 40
+}
+
+func containsHexRun(value string, minimum int) bool {
+	run := 0
+	for _, r := range strings.ToLower(value) {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			run++
+			if run >= minimum {
+				return true
+			}
+			continue
+		}
+		run = 0
+	}
+	return false
 }
 
 func allHex(value string) bool {
