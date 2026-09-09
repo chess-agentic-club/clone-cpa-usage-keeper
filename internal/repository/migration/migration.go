@@ -106,6 +106,7 @@ const (
 	migrationNormalizeLiteLLMUsageGroups          = "20260908_normalize_litellm_usage_groups"
 	migrationAddAuthSessionExternalIdentity       = "20260908_auth_session_external_identity"
 	migrationAddAuthSessionViewerRevalidationRef  = "20260909_auth_session_viewer_revalidation_reference"
+	migrationAddUsageEventArchiveExternalFields   = "20260909_usage_event_archive_external_fields"
 	migrationBackfillCLIProxyUsageSourceSystem    = "20260909_backfill_cliproxy_usage_source_system"
 )
 
@@ -263,6 +264,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationNormalizeLiteLLMUsageGroups, run: normalizeLegacyLiteLLMUsageGroupsMigration},
 		{version: migrationAddAuthSessionExternalIdentity, run: addAuthSessionExternalIdentityMigration},
 		{version: migrationAddAuthSessionViewerRevalidationRef, run: addAuthSessionViewerRevalidationReferenceMigration},
+		{version: migrationAddUsageEventArchiveExternalFields, run: addUsageEventArchiveExternalFieldsMigration},
 		{version: migrationBackfillCLIProxyUsageSourceSystem, run: backfillCLIProxyUsageSourceSystemMigration},
 	}
 }
