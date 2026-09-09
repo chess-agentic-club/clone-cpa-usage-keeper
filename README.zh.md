@@ -184,7 +184,7 @@ Docker Compose 同时推荐用于 CPA + Keeper 联合部署和 Keeper 单独部�
 
 #### CPA + Keeper
 
-将下面内容保存为 `docker-compose.yml`，并替换管理密钥和登录密码：
+在仓库检出目录中，将下面内容保存为 `docker-compose.yml`，并替换管理密钥和登录密码：
 
 ```yaml
 services:
@@ -203,7 +203,10 @@ services:
       - cpa-network
 
   cpa-usage-keeper:
-    image: ghcr.io/willxup/cpa-usage-keeper:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${CPA_USAGE_KEEPER_IMAGE:-cpa-usage-keeper:local}
     container_name: cpa-usage-keeper
     restart: unless-stopped
     depends_on:
@@ -235,7 +238,7 @@ CPA 数据保存在 `./cpa`，Keeper 数据保存在 `./keeper`。
 
 #### Keeper Only
 
-CPA 已经部署好时，直接使用仓库中的 Keeper-only Compose 模板：
+CPA 已经部署好时，直接使用仓库中的 Keeper-only Compose 模板。该模板会从当前检出构建 Keeper；如需指定本地镜像标签，可设置 `CPA_USAGE_KEEPER_IMAGE`：
 
 ```bash
 cp deploy/docker-compose.example.yml docker-compose.yml

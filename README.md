@@ -185,7 +185,7 @@ Docker Compose is recommended for both a complete CPA + Keeper stack and a Keepe
 
 #### CPA + Keeper
 
-Save the following as `docker-compose.yml`, then replace the management key and login password:
+From the repository checkout, save the following as `docker-compose.yml`, then replace the management key and login password:
 
 ```yaml
 services:
@@ -204,7 +204,10 @@ services:
       - cpa-network
 
   cpa-usage-keeper:
-    image: ghcr.io/willxup/cpa-usage-keeper:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${CPA_USAGE_KEEPER_IMAGE:-cpa-usage-keeper:local}
     container_name: cpa-usage-keeper
     restart: unless-stopped
     depends_on:
@@ -236,7 +239,7 @@ CPA data is stored under `./cpa`, and Keeper data is stored under `./keeper`.
 
 #### Keeper Only
 
-When CPA is already deployed, use the repository's Keeper-only Compose template:
+When CPA is already deployed, use the repository's Keeper-only Compose template. It builds Keeper from this checkout; optionally set `CPA_USAGE_KEEPER_IMAGE` to choose the local image tag:
 
 ```bash
 cp deploy/docker-compose.example.yml docker-compose.yml

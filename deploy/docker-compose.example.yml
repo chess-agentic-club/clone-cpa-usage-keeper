@@ -1,6 +1,12 @@
+# Copy this file to the repository root before running `docker compose up`.
+# Keeper is built from that checkout; CPA_USAGE_KEEPER_IMAGE only sets its local tag.
 services:
   cpa-usage-keeper:
-    image: ghcr.io/willxup/cpa-usage-keeper:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Optional local tag; the image is always built from this checkout.
+    image: ${CPA_USAGE_KEEPER_IMAGE:-cpa-usage-keeper:local}
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -13,7 +19,10 @@ services:
 
 # LiteLLM-only variant (use as a separate Compose project and data directory):
 # cpa-usage-keeper:
-#   image: ghcr.io/willxup/cpa-usage-keeper:latest
+#   build:
+#     context: .
+#     dockerfile: Dockerfile
+#   image: ${CPA_USAGE_KEEPER_IMAGE:-cpa-usage-keeper:local}
 #   restart: unless-stopped
 #   ports:
 #     - "8080:8080"
