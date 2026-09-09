@@ -198,6 +198,71 @@ func registerUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageP
 	})
 }
 
+func registerScopedAdminUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageProvider, access service.UsageAccessProvider) {
+	registerResolvedUsageAnalysisRoutes(router, usageProvider, access, "/usage/analysis", false)
+}
+
+func registerUserUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageProvider, access service.UsageAccessProvider) {
+	registerResolvedUsageAnalysisRoutes(router, usageProvider, access, "/key-analysis", true)
+}
+
+func registerResolvedUsageAnalysisRoutes(router gin.IRoutes, usageProvider service.UsageProvider, access service.UsageAccessProvider, route string, redactSourceIdentities bool) {
+	router.GET(route, func(c *gin.Context) {
+		filter, err := parseScopedUsageAnalysisTimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		if !applyResolvedUsageScope(c, access, &filter) {
+			return
+		}
+		if usageProvider == nil {
+			c.JSON(http.StatusOK, emptyAnalysisResponse())
+			return
+		}
+		analysis, err := usageProvider.GetAnalysis(c.Request.Context(), filter)
+		if err != nil {
+			writeInternalError(c, "get scoped analysis failed", err)
+			return
+		}
+		apiKeyInfos, ok := resolvedUsageScopeAPIKeyInfos(c, access)
+		if !ok {
+			return
+		}
+		payload := buildAnalysisPayload(analysis, apiKeyInfos)
+		if redactSourceIdentities {
+			payload.AuthFilesComposition = []analysisCompositionItem{}
+			payload.AIProviderComposition = []analysisCompositionItem{}
+		}
+		c.JSON(http.StatusOK, payload)
+	})
+
+	router.GET(route+"/latency", func(c *gin.Context) {
+		filter, err := parseScopedUsageAnalysisTimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		if !applyResolvedUsageScope(c, access, &filter) {
+			return
+		}
+		if usageProvider == nil {
+			c.JSON(http.StatusOK, emptyAnalysisLatencyDiagnosticsResponse())
+			return
+		}
+		latency, err := usageProvider.GetAnalysisLatency(c.Request.Context(), filter)
+		if err != nil {
+			writeInternalError(c, "get scoped analysis latency failed", err)
+			return
+		}
+		if latency == nil {
+			c.JSON(http.StatusOK, emptyAnalysisLatencyDiagnosticsResponse())
+			return
+		}
+		c.JSON(http.StatusOK, buildAnalysisLatencyDiagnosticsPayload(*latency))
+	})
+}
+
 func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.UsageProvider) {
 	router.GET("/key-analysis", func(c *gin.Context) {
 		principal, session, ok := viewerScopeFromContext(c)

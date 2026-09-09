@@ -145,7 +145,13 @@ func NewRouter(
 	registerUpdateRoutes(adminProtected, nil)
 	registerUsageOverviewRoute(adminProtected, usageProvider, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
 	registerUsageActivityRoute(adminProtected, usageProvider)
-	registerUsageAnalysisRoute(adminProtected, usageProvider, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
+	if authHandler.config.AuthMode == AuthModeEmbeddedJWT {
+		registerScopedAdminUsageAnalysisRoute(adminProtected, usageProvider, authHandler.usageAccess)
+		registerUsageScopeUserRoute(adminProtected, authHandler.usageAccess, authHandler.catalogState)
+		registerIdentityMappingRoutes(adminProtected, authHandler.usageAccess, authHandler.catalogState)
+	} else {
+		registerUsageAnalysisRoute(adminProtected, usageProvider, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
+	}
 	registerUsageEventsRoute(adminProtected, usageProvider, usageIdentityProvider, cpaAPIKeyProvider, requestLogProvider, requestLogDownloadTokens, capabilities.HasCPAIntegration(), statusConfig.CPARequestLogAccessEnabled, usageAPIKeyIdentityProvider)
 	registerUsageIdentityRoutes(adminProtected, usageIdentityProvider)
 	registerUsageAPIKeyOptionRoute(adminProtected, cpaAPIKeyProvider, usageAPIKeyIdentityProvider)
@@ -170,12 +176,26 @@ func NewRouter(
 		rankinghttpapi.RegisterLocalRoutes(adminProtected, localRankingProvider)
 	}
 
+	if authHandler.config.AuthMode == AuthModeEmbeddedJWT {
+		scopeProtected := apiV1.Group("")
+		scopeProtected.Use(authHandler.roleMiddleware(auth.RoleAdmin, auth.RoleUser))
+		registerUsageScopeKeyRoute(scopeProtected, authHandler.usageAccess, authHandler.catalogState)
+
+		userProtected := apiV1.Group("")
+		userProtected.Use(authHandler.roleMiddleware(auth.RoleUser))
+		registerUserOverviewRoute(userProtected, usageProvider, authHandler.usageAccess)
+		registerUserActivityRoute(userProtected, usageProvider, authHandler.usageAccess)
+		registerUserUsageAnalysisRoute(userProtected, usageProvider, authHandler.usageAccess)
+	}
+
 	keyViewerProtected := apiV1.Group("")
 	keyViewerProtected.Use(authHandler.apiKeyViewerMiddleware())
 	keyViewerProtected.Use(authHandler.activeAPIKeyViewerMiddleware())
-	registerKeyOverviewRoute(keyViewerProtected, usageProvider)
-	registerKeyActivityRoute(keyViewerProtected, usageProvider)
-	registerKeyUsageAnalysisRoute(keyViewerProtected, usageProvider)
+	if authHandler.config.AuthMode != AuthModeEmbeddedJWT {
+		registerKeyOverviewRoute(keyViewerProtected, usageProvider)
+		registerKeyActivityRoute(keyViewerProtected, usageProvider)
+		registerKeyUsageAnalysisRoute(keyViewerProtected, usageProvider)
+	}
 	registerKeyUsageEventsRoute(keyViewerProtected, usageProvider)
 	if rankingProvider != nil {
 		rankinghttpapi.RegisterKeyViewerRoutes(keyViewerProtected, rankingProvider)

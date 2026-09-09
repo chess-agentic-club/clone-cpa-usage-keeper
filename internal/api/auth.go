@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	sessionCookieName         = "cpa_usage_keeper_session"
-	embedSessionCookieName    = "cpa_usage_keeper_embed_session"
-	authTokenContextKey       = "auth_token"
-	authSessionContextKey     = "auth_session"
-	authResolvedContextKey    = "auth_resolved_session"
-	activeViewerKeyContextKey = "active_viewer_api_key"
+	sessionCookieName           = "cpa_usage_keeper_session"
+	embedSessionCookieName      = "cpa_usage_keeper_embed_session"
+	authTokenContextKey         = "auth_token"
+	authSessionContextKey       = "auth_session"
+	authResolvedContextKey      = "auth_resolved_session"
+	activeViewerKeyContextKey   = "active_viewer_api_key"
+	embeddedPrincipalContextKey = "embedded_access_principal"
 
 	embedHeaderName               = "X-CPA-Usage-Keeper-Embed"
 	embedHeaderValueCPAMC         = "cpamc"
@@ -218,12 +219,42 @@ func (h *authHandler) roleMiddleware(allowedRoles ...auth.Role) gin.HandlerFunc 
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			return
 		}
+		if h.config.AuthMode == AuthModeEmbeddedJWT && (session.Role == auth.RoleAdmin || session.Role == auth.RoleUser) {
+			if session.Source != auth.SessionSourceEmbed || strings.TrimSpace(session.ExternalIdentityID) == "" || h.usageAccess == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+				return
+			}
+			principal, err := h.usageAccess.RehydrateAccessPrincipal(
+				c.Request.Context(),
+				session.ExternalIdentityID,
+				h.config.UsageSource,
+				session.Role == auth.RoleAdmin,
+			)
+			if err != nil {
+				if errors.Is(err, service.ErrUsageScopeUnavailable) {
+					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "catalog unavailable"})
+					return
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+				return
+			}
+			c.Set(embeddedPrincipalContextKey, principal)
+		}
 		c.Set(authTokenContextKey, resolved.Token)
 		c.Set(authSessionContextKey, session)
 		c.Set(authResolvedContextKey, resolved)
 		h.sessions.Touch(resolved.Token, sessionClientIP(c))
 		c.Next()
 	}
+}
+
+func embeddedAccessPrincipalFromContext(c *gin.Context) (service.AccessPrincipal, bool) {
+	if c == nil {
+		return service.AccessPrincipal{}, false
+	}
+	value, exists := c.Get(embeddedPrincipalContextKey)
+	principal, ok := value.(service.AccessPrincipal)
+	return principal, exists && ok
 }
 
 func (h *authHandler) activeAPIKeyViewerMiddleware() gin.HandlerFunc {

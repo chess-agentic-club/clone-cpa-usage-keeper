@@ -44,6 +44,7 @@ type SourceAPIKeyInput struct {
 // credentials.
 type IdentityMappingRecord struct {
 	ExternalIdentityID string
+	ExternalLabel      string
 	SourceSystem       string
 	SourceUserID       string
 	MatchMethod        string
@@ -96,6 +97,19 @@ func (r *CatalogRepository) UpsertExternalIdentity(ctx context.Context, issuer, 
 		return nil
 	})
 	return identity, err
+}
+
+// FindExternalIdentityByID verifies a persisted, opaque authentication
+// identity without accepting issuer, subject, or email claims from a session.
+func (r *CatalogRepository) FindExternalIdentityByID(ctx context.Context, id string) (entities.ExternalIdentity, error) {
+	if r == nil || r.db == nil {
+		return entities.ExternalIdentity{}, fmt.Errorf("catalog database is nil")
+	}
+	var identity entities.ExternalIdentity
+	if err := r.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(id)).First(&identity).Error; err != nil {
+		return entities.ExternalIdentity{}, err
+	}
+	return identity, nil
 }
 
 func (r *CatalogRepository) FindIdentityLink(ctx context.Context, externalIdentityID, sourceSystem string) (entities.IdentitySourceLink, bool, error) {
@@ -215,15 +229,26 @@ func (r *CatalogRepository) ListIdentityMappings(ctx context.Context, sourceSyst
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("catalog database is nil")
 	}
+	sourceSystem = strings.TrimSpace(sourceSystem)
+	var identities []entities.ExternalIdentity
+	if err := r.db.WithContext(ctx).Order("id ASC").Find(&identities).Error; err != nil {
+		return nil, fmt.Errorf("list external identities: %w", err)
+	}
 	var links []entities.IdentitySourceLink
-	if err := r.db.WithContext(ctx).Where("source_system = ?", strings.TrimSpace(sourceSystem)).Order("external_identity_id ASC, id ASC").Find(&links).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("source_system = ?", sourceSystem).Order("external_identity_id ASC, id ASC").Find(&links).Error; err != nil {
 		return nil, fmt.Errorf("list identity mappings: %w", err)
 	}
-	records := make([]IdentityMappingRecord, 0, len(links))
+	linksByIdentity := make(map[string]entities.IdentitySourceLink, len(links))
 	for _, link := range links {
+		linksByIdentity[link.ExternalIdentityID] = link
+	}
+	records := make([]IdentityMappingRecord, 0, len(identities))
+	for _, identity := range identities {
+		link := linksByIdentity[identity.ID]
 		records = append(records, IdentityMappingRecord{
-			ExternalIdentityID: link.ExternalIdentityID,
-			SourceSystem:       link.SourceSystem,
+			ExternalIdentityID: identity.ID,
+			ExternalLabel:      identity.DisplayName,
+			SourceSystem:       sourceSystem,
 			SourceUserID:       link.SourceUserID,
 			MatchMethod:        link.MatchMethod,
 			Confirmed:          link.Confirmed,

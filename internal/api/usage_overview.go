@@ -199,6 +199,31 @@ func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsagePro
 	})
 }
 
+func registerUserOverviewRoute(router gin.IRoutes, usageProvider service.UsageProvider, access service.UsageAccessProvider) {
+	router.GET("/key-overview", func(c *gin.Context) {
+		filter, err := parseKeyUsageOverviewTimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		if !applyResolvedUsageScope(c, access, &filter) {
+			return
+		}
+		writeUsageOverviewResponse(c, usageProvider, filter)
+	})
+	router.GET("/key-overview/realtime", func(c *gin.Context) {
+		filter, err := parseKeyUsageRealtimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		if !applyResolvedUsageScope(c, access, &filter) {
+			return
+		}
+		writeKeyUsageOverviewRealtimeResponse(c, usageProvider, filter)
+	})
+}
+
 func registerUsageOverviewRoute(router gin.IRoutes, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider, identityProvider ...service.UsageAPIKeyIdentityProvider) {
 	router.GET("/usage/overview", func(c *gin.Context) {
 		if usageProvider == nil {

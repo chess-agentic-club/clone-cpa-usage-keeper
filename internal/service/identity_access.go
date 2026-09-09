@@ -55,6 +55,7 @@ type SourceUsageKeyResolver interface {
 
 type UsageAccessProvider interface {
 	ResolveIdentity(context.Context, auth.ExternalPrincipal, string) (AccessPrincipal, error)
+	RehydrateAccessPrincipal(context.Context, string, string, bool) (AccessPrincipal, error)
 	ResolveScope(context.Context, AccessPrincipal, ScopeSelection) (servicedto.UsageScope, error)
 	ListScopeUsers(context.Context, AccessPrincipal) ([]entities.SourceUser, error)
 	ListScopeKeys(context.Context, AccessPrincipal, string) ([]entities.SourceAPIKey, error)
@@ -117,36 +118,63 @@ func (s *IdentityAccessService) ResolveIdentity(ctx context.Context, principal a
 	return newAccessPrincipal(identity.ID, sourceSystem, users[0].ID, false), nil
 }
 
+// RehydrateAccessPrincipal rebuilds the private policy grant for a persisted
+// embedded session. Only the opaque identity ID and server-selected source and
+// role participate; browser data cannot mint a grant.
+func (s *IdentityAccessService) RehydrateAccessPrincipal(ctx context.Context, externalIdentityID, sourceSystem string, isAdministrator bool) (AccessPrincipal, error) {
+	externalIdentityID, sourceSystem = strings.TrimSpace(externalIdentityID), strings.TrimSpace(sourceSystem)
+	if externalIdentityID == "" || !s.supportsSource(sourceSystem) {
+		return AccessPrincipal{}, ErrUsageScopeForbidden
+	}
+	identity, err := s.catalog.FindExternalIdentityByID(ctx, externalIdentityID)
+	if err != nil || identity.ID != externalIdentityID {
+		return AccessPrincipal{}, ErrUsageScopeForbidden
+	}
+	if isAdministrator {
+		return newAccessPrincipal(identity.ID, sourceSystem, "", true), nil
+	}
+	link, found, err := s.catalog.FindIdentityLink(ctx, identity.ID, sourceSystem)
+	if err != nil {
+		return AccessPrincipal{}, ErrUsageScopeUnavailable
+	}
+	if !found || !s.isActiveSourceUser(ctx, sourceSystem, link.SourceUserID) {
+		return AccessPrincipal{}, ErrUsageScopeForbidden
+	}
+	return newAccessPrincipal(identity.ID, sourceSystem, link.SourceUserID, false), nil
+}
+
 func (s *IdentityAccessService) ResolveScope(ctx context.Context, principal AccessPrincipal, selection ScopeSelection) (servicedto.UsageScope, error) {
 	principal, accepted := s.trustedPrincipal(principal)
-	if !accepted || (strings.TrimSpace(selection.UserCatalogID) != "" && strings.TrimSpace(selection.KeyCatalogID) != "") {
+	userCatalogID := strings.TrimSpace(selection.UserCatalogID)
+	keyCatalogID := strings.TrimSpace(selection.KeyCatalogID)
+	if !accepted || (!principal.IsAdministrator && userCatalogID != "") {
 		return servicedto.UsageScope{}, ErrUsageScopeForbidden
 	}
-	if principal.IsAdministrator && strings.TrimSpace(selection.UserCatalogID) == "" && strings.TrimSpace(selection.KeyCatalogID) == "" {
+	if principal.IsAdministrator && userCatalogID == "" && keyCatalogID == "" {
 		return servicedto.UsageScope{Mode: servicedto.UsageScopeAllSource, SourceSystem: principal.SourceSystem}, nil
 	}
 
 	var keys []entities.SourceAPIKey
 	if principal.IsAdministrator {
 		var err error
-		if keyID := strings.TrimSpace(selection.KeyCatalogID); keyID != "" {
-			key, findErr := s.catalog.FindActiveSourceAPIKeyByID(ctx, principal.SourceSystem, keyID)
+		if keyCatalogID != "" {
+			key, findErr := s.catalog.FindActiveSourceAPIKeyByID(ctx, principal.SourceSystem, keyCatalogID)
 			if findErr != nil {
+				return servicedto.UsageScope{}, ErrUsageScopeForbidden
+			}
+			if userCatalogID != "" && (key.SourceUserID != userCatalogID || !s.isActiveSourceUser(ctx, principal.SourceSystem, userCatalogID)) {
 				return servicedto.UsageScope{}, ErrUsageScopeForbidden
 			}
 			keys = []entities.SourceAPIKey{key}
 		} else {
-			keys, err = s.keysForActiveUser(ctx, principal.SourceSystem, selection.UserCatalogID)
+			keys, err = s.keysForActiveUser(ctx, principal.SourceSystem, userCatalogID)
 			if err != nil {
 				return servicedto.UsageScope{}, err
 			}
 		}
 	} else {
-		if strings.TrimSpace(selection.UserCatalogID) != "" {
-			return servicedto.UsageScope{}, ErrUsageScopeForbidden
-		}
-		if keyID := strings.TrimSpace(selection.KeyCatalogID); keyID != "" {
-			key, findErr := s.catalog.FindActiveSourceAPIKeyByID(ctx, principal.SourceSystem, keyID)
+		if keyCatalogID != "" {
+			key, findErr := s.catalog.FindActiveSourceAPIKeyByID(ctx, principal.SourceSystem, keyCatalogID)
 			if findErr != nil || key.SourceUserID != principal.SourceUserID {
 				return servicedto.UsageScope{}, ErrUsageScopeForbidden
 			}

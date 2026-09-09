@@ -73,6 +73,43 @@ func TestResolveScopeAppliesAdministratorAndUserPolicy(t *testing.T) {
 	}
 }
 
+func TestResolveScopeAllowsMatchingAdministratorUserAndKeyOnly(t *testing.T) {
+	access, _, bobKeyID := seededIdentityAccessService(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, access, ctx)
+	users, err := access.ListScopeUsers(ctx, admin)
+	if err != nil {
+		t.Fatalf("ListScopeUsers(admin): %v", err)
+	}
+	keys, err := access.ListScopeKeys(ctx, admin, "")
+	if err != nil {
+		t.Fatalf("ListScopeKeys(admin): %v", err)
+	}
+	var bobUserID string
+	for _, key := range keys {
+		if key.ID == bobKeyID {
+			bobUserID = key.SourceUserID
+			break
+		}
+	}
+	if bobUserID == "" {
+		t.Fatal("seed must contain Bob's key")
+	}
+
+	matching, err := access.ResolveScope(ctx, admin, ScopeSelection{UserCatalogID: bobUserID, KeyCatalogID: bobKeyID})
+	if err != nil || !sameStrings(matching.APIGroupKeys, []string{"internal-bob"}) {
+		t.Fatalf("matching user/key scope = %#v, %v", matching, err)
+	}
+	for _, user := range users {
+		if user.ID == bobUserID {
+			continue
+		}
+		if _, err := access.ResolveScope(ctx, admin, ScopeSelection{UserCatalogID: user.ID, KeyCatalogID: bobKeyID}); err != ErrUsageScopeForbidden {
+			t.Fatalf("mismatched user/key error = %v, want ErrUsageScopeForbidden", err)
+		}
+	}
+}
+
 func TestResolveScopeLimitsUserToOwnedKeysAndNormalizesResolverOutput(t *testing.T) {
 	access, alice, _ := seededIdentityAccessService(t)
 	ctx := context.Background()
@@ -220,6 +257,47 @@ func TestIdentityMappingAdministrationIsSourceScoped(t *testing.T) {
 	}
 	if err := access.ReplaceIdentityMapping(ctx, alice, alice.ExternalIdentityID, alice.SourceUserID); err != ErrUsageScopeForbidden {
 		t.Fatalf("ReplaceIdentityMapping(user) error = %v, want ErrUsageScopeForbidden", err)
+	}
+}
+
+func TestRehydrateAccessPrincipalRestoresOnlyPersistedIdentityAuthority(t *testing.T) {
+	access, alice, _ := seededIdentityAccessService(t)
+	ctx := context.Background()
+
+	rehydrated, err := access.RehydrateAccessPrincipal(ctx, alice.ExternalIdentityID, "litellm", false)
+	if err != nil {
+		t.Fatalf("RehydrateAccessPrincipal(user): %v", err)
+	}
+	rehydrated.IsAdministrator = true
+	scope, err := access.ResolveScope(ctx, rehydrated, ScopeSelection{})
+	if err != nil || scope.Mode != servicedto.UsageScopeKeySet || !sameStrings(scope.APIGroupKeys, []string{"internal-alice-a", "internal-alice-b"}) {
+		t.Fatalf("rehydrated user scope = %#v, %v; want immutable Alice key set", scope, err)
+	}
+
+	admin := mustAdmin(t, access, ctx)
+	rehydratedAdmin, err := access.RehydrateAccessPrincipal(ctx, admin.ExternalIdentityID, "litellm", true)
+	if err != nil {
+		t.Fatalf("RehydrateAccessPrincipal(admin): %v", err)
+	}
+	adminScope, err := access.ResolveScope(ctx, rehydratedAdmin, ScopeSelection{})
+	if err != nil || adminScope.Mode != servicedto.UsageScopeAllSource {
+		t.Fatalf("rehydrated admin scope = %#v, %v; want all source", adminScope, err)
+	}
+
+	for _, tc := range []struct {
+		name          string
+		externalID    string
+		sourceSystem  string
+		administrator bool
+	}{
+		{name: "unknown identity", externalID: "not-persisted", sourceSystem: "litellm"},
+		{name: "foreign source", externalID: alice.ExternalIdentityID, sourceSystem: "other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := access.RehydrateAccessPrincipal(ctx, tc.externalID, tc.sourceSystem, tc.administrator); err != ErrUsageScopeForbidden {
+				t.Fatalf("RehydrateAccessPrincipal() error = %v, want ErrUsageScopeForbidden", err)
+			}
+		})
 	}
 }
 

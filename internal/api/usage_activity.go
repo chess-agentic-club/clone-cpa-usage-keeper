@@ -145,6 +145,20 @@ func registerKeyActivityRoute(router gin.IRoutes, usageProvider service.UsagePro
 	})
 }
 
+func registerUserActivityRoute(router gin.IRoutes, usageProvider service.UsageProvider, access service.UsageAccessProvider) {
+	router.GET("/key-activity", func(c *gin.Context) {
+		filter, err := parseKeyUsageActivityFilterQuery(c.Request, time.Now())
+		if err != nil {
+			writeUsageFilterParseError(c, err)
+			return
+		}
+		if !applyResolvedUsageScope(c, access, &filter) {
+			return
+		}
+		writeUsageActivityResponse(c, usageProvider, filter)
+	})
+}
+
 func writeUsageActivityResponse(c *gin.Context, usageProvider service.UsageProvider, filter servicedto.UsageFilter) {
 	if usageProvider == nil {
 		writeInternalError(c, "get usage activity failed", fmt.Errorf("usage provider is unavailable"))
