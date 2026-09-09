@@ -198,6 +198,7 @@ func TestJWTVerifierRejectsInvalidVerifierConfiguration(t *testing.T) {
 		{name: "multiple algorithms allowed", mutate: func(cfg *auth.JWTVerifierConfig) { cfg.AllowedAlgorithms = []string{"RS256", "HS256"} }},
 		{name: "blank role claim", mutate: func(cfg *auth.JWTVerifierConfig) { cfg.RoleClaim = "" }},
 		{name: "negative timeout", mutate: func(cfg *auth.JWTVerifierConfig) { cfg.JWKSRequestTimeout = -time.Second }},
+		{name: "negative cache TTL", mutate: func(cfg *auth.JWTVerifierConfig) { cfg.JWKSCacheTTL = -time.Second }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -208,6 +209,107 @@ func TestJWTVerifierRejectsInvalidVerifierConfiguration(t *testing.T) {
 				t.Fatalf("expected invalid verifier config to fail closed, got %v", err)
 			}
 		})
+	}
+}
+
+func TestJWTVerifierRejectsKeyRemovedFromFreshJWKS(t *testing.T) {
+	key := newRSAKey(t)
+	var requests atomic.Int32
+	var mu sync.RWMutex
+	current := jwksDocument(t, testJWK("active", &key.PublicKey))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		mu.RLock()
+		defer mu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(current)
+	}))
+	t.Cleanup(server.Close)
+	verifier := newTestVerifierWithCacheTTL(server.URL, 20*time.Millisecond)
+	raw := signRS256(t, key, "active", validClaims())
+
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("prime verifier cache: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("reuse fresh verifier cache: %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected known key reuse within freshness window, got %d requests", got)
+	}
+	mu.Lock()
+	current = jwksDocument(t)
+	mu.Unlock()
+	time.Sleep(30 * time.Millisecond)
+
+	if _, err := verifier.Verify(context.Background(), raw); !isInvalidAssertion(err) {
+		t.Fatalf("expected removed cached key rejection, got %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected stale cached key to trigger one refresh, got %d requests", got)
+	}
+}
+
+func TestJWTVerifierRejectsOldSignatureAfterSameKeyIDRotation(t *testing.T) {
+	oldKey := newRSAKey(t)
+	newKey := newRSAKey(t)
+	var requests atomic.Int32
+	var mu sync.RWMutex
+	current := jwksDocument(t, testJWK("active", &oldKey.PublicKey))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		mu.RLock()
+		defer mu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(current)
+	}))
+	t.Cleanup(server.Close)
+	verifier := newTestVerifierWithCacheTTL(server.URL, 20*time.Millisecond)
+	oldAssertion := signRS256(t, oldKey, "active", validClaims())
+	newAssertion := signRS256(t, newKey, "active", validClaims())
+
+	if _, err := verifier.Verify(context.Background(), oldAssertion); err != nil {
+		t.Fatalf("prime verifier cache: %v", err)
+	}
+	mu.Lock()
+	current = jwksDocument(t, testJWK("active", &newKey.PublicKey))
+	mu.Unlock()
+	time.Sleep(30 * time.Millisecond)
+
+	if _, err := verifier.Verify(context.Background(), oldAssertion); !isInvalidAssertion(err) {
+		t.Fatalf("expected rotated same-kid signature rejection, got %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected exactly one freshness refresh for same-kid rotation, got %d requests", got)
+	}
+	if _, err := verifier.Verify(context.Background(), newAssertion); err != nil {
+		t.Fatalf("expected replacement same-kid signature acceptance: %v", err)
+	}
+}
+
+func TestJWTVerifierFailsClosedWhenStaleJWKSRefreshFails(t *testing.T) {
+	key := newRSAKey(t)
+	var unavailable atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if unavailable.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jwksDocument(t, testJWK("active", &key.PublicKey)))
+	}))
+	t.Cleanup(server.Close)
+	verifier := newTestVerifierWithCacheTTL(server.URL, 20*time.Millisecond)
+	raw := signRS256(t, key, "active", validClaims())
+
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("prime verifier cache: %v", err)
+	}
+	unavailable.Store(true)
+	time.Sleep(30 * time.Millisecond)
+
+	if _, err := verifier.Verify(context.Background(), raw); !isInvalidAssertion(err) {
+		t.Fatalf("expected stale key rejection when refresh fails, got %v", err)
 	}
 }
 
@@ -373,6 +475,10 @@ func TestJWTVerifierDoesNotLeakRawAssertionsInErrors(t *testing.T) {
 }
 
 func newTestVerifier(jwksURL string) *auth.JWTVerifier {
+	return newTestVerifierWithCacheTTL(jwksURL, 0)
+}
+
+func newTestVerifierWithCacheTTL(jwksURL string, cacheTTL time.Duration) *auth.JWTVerifier {
 	return auth.NewJWTVerifier(auth.JWTVerifierConfig{
 		Issuer:             "open-webui",
 		Audience:           "keeper",
@@ -380,6 +486,7 @@ func newTestVerifier(jwksURL string) *auth.JWTVerifier {
 		AllowedAlgorithms:  []string{"RS256"},
 		RoleClaim:          "role",
 		JWKSRequestTimeout: time.Second,
+		JWKSCacheTTL:       cacheTTL,
 	})
 }
 

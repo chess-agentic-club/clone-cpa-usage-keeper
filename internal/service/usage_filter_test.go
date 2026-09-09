@@ -139,6 +139,72 @@ func TestUsageServiceMultiKeyScopeAndEmptyScope(t *testing.T) {
 	}
 }
 
+func TestCLIProxyRedisEventIsIncludedInTrustedRealtimeScope(t *testing.T) {
+	previousLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = previousLocal })
+
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "cliproxy-realtime-scope.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	event, _, err := DecodeRedisUsageMessage(`{"timestamp":"2026-09-09T11:55:00Z","api_key":"sk-cli","model":"gpt-5","request_id":"cli-realtime","tokens":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`, now)
+	if err != nil {
+		t.Fatalf("DecodeRedisUsageMessage returned error: %v", err)
+	}
+	cache := newServiceRecentCacheFromEvents(t, db, now, []entities.UsageEvent{event})
+	svc := NewUsageServiceWithRecentCache(db, cache, emptyPricingCatalogForTest())
+
+	realtime, err := svc.GetUsageOverviewRealtime(context.Background(), servicedto.UsageFilter{
+		RealtimeWindow:  "15m",
+		RealtimeEndTime: &now,
+		Scope:           &servicedto.UsageScope{Mode: servicedto.UsageScopeAllSource, SourceSystem: "cliproxy"},
+	})
+	if err != nil {
+		t.Fatalf("GetUsageOverviewRealtime returned error: %v", err)
+	}
+	if len(realtime.CurrentUsage.Models) != 1 || realtime.CurrentUsage.Models[0].Tokens != 30 {
+		t.Fatalf("expected trusted CLIProxy realtime scope to include decoded event, got %+v", realtime.CurrentUsage.Models)
+	}
+}
+
+func TestCLIProxyRedisEventIsIncludedInTrustedBoundaryScope(t *testing.T) {
+	previousLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = previousLocal })
+
+	db, err := repository.OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "cliproxy-boundary-scope.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-10 * time.Minute)
+	event, _, err := DecodeRedisUsageMessage(`{"timestamp":"2026-09-09T11:55:00Z","api_key":"sk-cli","model":"gpt-5","request_id":"cli-boundary","tokens":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`, now)
+	if err != nil {
+		t.Fatalf("DecodeRedisUsageMessage returned error: %v", err)
+	}
+	cache := newServiceRecentCacheFromEvents(t, db, now, []entities.UsageEvent{event})
+	svc := NewUsageServiceWithRecentCache(db, cache, emptyPricingCatalogForTest())
+
+	overview, err := svc.GetUsageOverview(context.Background(), servicedto.UsageFilter{
+		Range:        "custom",
+		StartTime:    &start,
+		EndTime:      &now,
+		EndExclusive: true,
+		QueryNow:     &now,
+		Scope:        &servicedto.UsageScope{Mode: servicedto.UsageScopeAllSource, SourceSystem: "cliproxy"},
+	})
+	if err != nil {
+		t.Fatalf("GetUsageOverview returned error: %v", err)
+	}
+	if overview.Usage == nil || overview.Usage.TotalRequests != 1 || overview.Usage.TotalTokens != 30 {
+		t.Fatalf("expected trusted CLIProxy boundary scope to include decoded event, got %+v", overview.Usage)
+	}
+}
+
 func TestUsageServiceGetUsageOverviewDelegatesToFilteredOverview(t *testing.T) {
 	previousLocal := time.Local
 	location, err := time.LoadLocation("Asia/Shanghai")

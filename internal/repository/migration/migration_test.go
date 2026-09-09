@@ -99,6 +99,7 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260908_normalize_litellm_usage_groups",
 		"20260908_auth_session_external_identity",
 		"20260909_auth_session_viewer_revalidation_reference",
+		"20260909_backfill_cliproxy_usage_source_system",
 	}
 	assertStringSlicesEqual(t, want, got)
 }

@@ -116,6 +116,7 @@ func (d queuedUsageDetail) toUsageEvent(fetchedAt time.Time) entities.UsageEvent
 	return entities.UsageEvent{
 		EventKey:            eventKey,
 		APIGroupKey:         apiGroupKey,
+		SourceSystem:        CLIProxyViewerSourceSystem,
 		Provider:            strings.TrimSpace(d.Provider),
 		Endpoint:            strings.TrimSpace(d.Endpoint),
 		AuthType:            normalizeRedisAuthType(d.AuthType),

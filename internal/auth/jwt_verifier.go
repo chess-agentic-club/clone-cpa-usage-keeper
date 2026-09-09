@@ -20,6 +20,7 @@ import (
 
 const (
 	defaultJWKSRequestTimeout = 5 * time.Second
+	defaultJWKSCacheTTL       = 5 * time.Minute
 	maxJWKSBodyBytes          = 1 << 20
 	minimumRSAModulusBits     = 2048
 )
@@ -43,6 +44,7 @@ type JWTVerifierConfig struct {
 	AllowedAlgorithms  []string
 	RoleClaim          string
 	JWKSRequestTimeout time.Duration
+	JWKSCacheTTL       time.Duration
 }
 
 // JWTVerifier validates embedded Open WebUI assertions against a cached JWKS.
@@ -50,12 +52,14 @@ type JWTVerifier struct {
 	config      JWTVerifierConfig
 	configValid bool
 	client      *http.Client
+	cacheTTL    time.Duration
 
-	cacheMu      sync.RWMutex
-	keys         map[string]*rsa.PublicKey
-	cacheLoaded  bool
-	cacheVersion uint64
-	refreshMu    sync.Mutex
+	cacheMu        sync.RWMutex
+	keys           map[string]*rsa.PublicKey
+	cacheLoaded    bool
+	cacheFetchedAt time.Time
+	cacheVersion   uint64
+	refreshMu      sync.Mutex
 }
 
 // NewJWTVerifier constructs a verifier. Invalid verifier configuration fails
@@ -67,9 +71,14 @@ func NewJWTVerifier(config JWTVerifierConfig) *JWTVerifier {
 	if timeout == 0 {
 		timeout = defaultJWKSRequestTimeout
 	}
+	cacheTTL := config.JWKSCacheTTL
+	if cacheTTL == 0 {
+		cacheTTL = defaultJWKSCacheTTL
+	}
 	return &JWTVerifier{
 		config:      config,
 		configValid: validJWTVerifierConfig(config),
+		cacheTTL:    cacheTTL,
 		client: &http.Client{
 			Timeout: timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -144,7 +153,7 @@ func validJWTVerifierConfig(config JWTVerifierConfig) bool {
 		config.Audience == "" || config.Audience != strings.TrimSpace(config.Audience) ||
 		config.RoleClaim == "" || config.RoleClaim != strings.TrimSpace(config.RoleClaim) ||
 		len(config.AllowedAlgorithms) != 1 || config.AllowedAlgorithms[0] != "RS256" ||
-		config.JWKSRequestTimeout < 0 {
+		config.JWKSRequestTimeout < 0 || config.JWKSCacheTTL < 0 {
 		return false
 	}
 	parsed, err := url.ParseRequestURI(config.JWKSURL)
@@ -193,15 +202,15 @@ func isExactNonBlankString(value string) bool {
 }
 
 func (verifier *JWTVerifier) keyForID(ctx context.Context, kid string) (*rsa.PublicKey, bool) {
-	key, loaded, version := verifier.cachedKey(kid)
-	if key != nil {
+	key, loaded, fetchedAt, version := verifier.cachedKey(kid)
+	if key != nil && verifier.cacheFresh(fetchedAt) {
 		return key, true
 	}
 
 	verifier.refreshMu.Lock()
 	defer verifier.refreshMu.Unlock()
-	key, currentLoaded, currentVersion := verifier.cachedKey(kid)
-	if key != nil {
+	key, currentLoaded, currentFetchedAt, currentVersion := verifier.cachedKey(kid)
+	if key != nil && verifier.cacheFresh(currentFetchedAt) {
 		return key, true
 	}
 	if currentVersion != version || loaded != currentLoaded {
@@ -215,16 +224,21 @@ func (verifier *JWTVerifier) keyForID(ctx context.Context, kid string) (*rsa.Pub
 	verifier.cacheMu.Lock()
 	verifier.keys = keys
 	verifier.cacheLoaded = true
+	verifier.cacheFetchedAt = time.Now()
 	verifier.cacheVersion++
 	key = verifier.keys[kid]
 	verifier.cacheMu.Unlock()
 	return key, key != nil
 }
 
-func (verifier *JWTVerifier) cachedKey(kid string) (*rsa.PublicKey, bool, uint64) {
+func (verifier *JWTVerifier) cachedKey(kid string) (*rsa.PublicKey, bool, time.Time, uint64) {
 	verifier.cacheMu.RLock()
 	defer verifier.cacheMu.RUnlock()
-	return verifier.keys[kid], verifier.cacheLoaded, verifier.cacheVersion
+	return verifier.keys[kid], verifier.cacheLoaded, verifier.cacheFetchedAt, verifier.cacheVersion
+}
+
+func (verifier *JWTVerifier) cacheFresh(fetchedAt time.Time) bool {
+	return !fetchedAt.IsZero() && time.Since(fetchedAt) < verifier.cacheTTL
 }
 
 type jwksPayload struct {
