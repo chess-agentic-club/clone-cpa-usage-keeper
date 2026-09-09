@@ -93,4 +93,26 @@ describe('useUsageScope', () => {
       await Promise.resolve();
     });
   });
+
+  it('clears a restored key selection and its persisted opaque value for admin All users', async () => {
+    localStorage.setItem('cpa-usage-keeper-usage-scope-v1', JSON.stringify({
+      userCatalogId: '',
+      keyCatalogId: 'key_opaque_stale',
+    }));
+    const seen: string[] = [];
+    apiMocks.fetchUsageScopeUsers.mockResolvedValue({ source_system: 'litellm', synced_at: '2026-09-09T00:00:00Z', stale: false, users: [] });
+    const Harness = () => {
+      const scope = useUsageScope({ role: 'admin', enabled: true });
+      seen.push(scopeSearchParams(scope.selection).toString());
+      return null;
+    };
+
+    await act(async () => { root.render(<Harness />); await Promise.resolve(); });
+
+    expect(seen.at(-1)).toBe('');
+    expect(JSON.parse(localStorage.getItem('cpa-usage-keeper-usage-scope-v1') ?? '{}')).toEqual({
+      userCatalogId: '',
+      keyCatalogId: '',
+    });
+  });
 });

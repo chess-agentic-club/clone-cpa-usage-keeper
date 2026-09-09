@@ -13,3 +13,9 @@ Validation completed:
 - `npm test`
 - `npm run lint`
 - `npm run typecheck`
+
+## Review fix round 1
+
+- Admin “All users” now clears `keyCatalogId` immediately in rendered and persisted scope state, so no `key_catalog_id` is appended to scoped requests after a restored session or a selector reset.
+- A user restored directly on `/key-ranking` is rendered as Overview before route-normalization effects run. The ranking page therefore cannot mount or start ranking API work for that role.
+- Added regressions for restored All-user scope persistence/query sanitization and direct user-ranking route guarding.

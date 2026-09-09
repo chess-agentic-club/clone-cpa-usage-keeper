@@ -53,13 +53,13 @@ export const useUsageScope = ({ role, enabled, onAuthRequired }: {
   const [error, setError] = useState('')
   const scopedSelection = useMemo(() => ({
     userCatalogId: role === 'user' ? '' : selection.userCatalogId,
-    keyCatalogId: selection.keyCatalogId,
+    keyCatalogId: role === 'admin' && !selection.userCatalogId ? '' : selection.keyCatalogId,
   }), [role, selection.keyCatalogId, selection.userCatalogId])
 
   const setSelection = useCallback((next: UsageScopeSelection) => {
     const sanitized = {
       userCatalogId: role === 'admin' ? next.userCatalogId : '',
-      keyCatalogId: next.keyCatalogId,
+      keyCatalogId: role === 'admin' && !next.userCatalogId ? '' : next.keyCatalogId,
     }
     persistSelection(sanitized)
     setSelectionState(sanitized)
@@ -70,6 +70,9 @@ export const useUsageScope = ({ role, enabled, onAuthRequired }: {
     setError('')
     setKeys(null)
     if (role === 'admin' && !scopedSelection.userCatalogId) {
+      if (selection.keyCatalogId) {
+        setSelection({ userCatalogId: '', keyCatalogId: '' })
+      }
       setLoading(false)
       return
     }
@@ -87,7 +90,7 @@ export const useUsageScope = ({ role, enabled, onAuthRequired }: {
     } finally {
       if (!controller.signal.aborted) setLoading(false)
     }
-  }, [onAuthRequired, role, scopedSelection, setSelection])
+  }, [onAuthRequired, role, scopedSelection, selection.keyCatalogId, setSelection])
 
   const loadUsers = useCallback(async (controller: AbortController) => {
     try {

@@ -183,6 +183,12 @@ function App() {
     setKeyViewerPath(path);
   }, [keyViewerPath]);
 
+  // A restored direct URL is rendered before the normalization effect runs.
+  // Keep a user session on the safe Overview shell during that first render.
+  const renderedKeyViewerPath: KeyViewerPath = authRole === 'user' && keyViewerPath === '/key-ranking'
+    ? '/key-overview'
+    : keyViewerPath;
+
   let page: ReactNode;
   if (authState === 'checking') {
     page = <div className="app-checking" aria-busy="true" />;
@@ -191,9 +197,9 @@ function App() {
       ? <div className="app-embedded-launch">{t('auth.open_usage_from_open_webui')}</div>
       : <LoginPage viewerKeyLoginEnabled={viewerKeyLoginEnabled} loading={submitting} adminError={adminLoginError} apiKeyError={apiKeyLoginError} onPasswordSubmit={handlePasswordLogin} onAPIKeySubmit={handleAPIKeyLogin} />;
   } else if (authRole === 'api_key_viewer' || authRole === 'user') {
-    page = keyViewerPath === '/key-analysis'
+    page = renderedKeyViewerPath === '/key-analysis'
       ? <KeyAnalysisPage role={authRole} apiKey={sessionAPIKey} scope={authRole === 'user' ? userScope : undefined} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
-      : keyViewerPath === '/key-ranking'
+      : renderedKeyViewerPath === '/key-ranking'
         ? <KeyRankingPage apiKey={sessionAPIKey} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />
         : <KeyOverviewPage role={authRole} apiKey={sessionAPIKey} scope={authRole === 'user' ? userScope : undefined} onNavigate={handleKeyViewerNavigate} onAuthRequired={clearSession} />;
   } else {
